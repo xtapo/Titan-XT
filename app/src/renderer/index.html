@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Titan-XT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles/global.css" />
+  <link rel="stylesheet" href="./styles/home.css" />
+  <link rel="stylesheet" href="./styles/session.css" />
+  <link rel="stylesheet" href="./styles/components.css" />
+</head>
+<body>
+  <header id="titlebar">
+    <div class="titlebar-drag">
+      <div class="titlebar-icon">◆</div>
+      <span class="titlebar-title">TITAN-XT</span>
+    </div>
+    <div class="titlebar-controls">
+      <button id="btn-minimize" class="titlebar-btn">─</button>
+      <button id="btn-maximize" class="titlebar-btn">□</button>
+      <button id="btn-close" class="titlebar-btn btn-close">✕</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <div id="page-home" class="page active"></div>
+    <div id="page-session" class="page"></div>
+  </main>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

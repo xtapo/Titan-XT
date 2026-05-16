@@ -1,0 +1,16 @@
+{
+  "name": "titan-xt",
+  "version": "1.0.0",
+  "description": "Titan-XT — Remote Desktop Support Tool",
+  "private": true,
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../app && npm install",
+    "dev:server": "cd server && npm run dev",
+    "dev:app": "cd app && npm run dev",
+    "build:server": "cd server && npm run build",
+    "build:app": "cd app && npm run build",
+    "package:app": "cd app && npm run package"
+  },
+  "author": "Titan-XT Team",
+  "license": "MIT"
+}
