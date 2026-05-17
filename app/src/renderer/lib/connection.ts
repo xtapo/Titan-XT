@@ -83,6 +83,19 @@ export class ConnectionManager {
   // so we don't oscillate while the new bitrate is still stabilizing.
   private adaptiveCooldown: number = 0;
 
+  // Track viewer-side mode (control vs view) and host-side lock state
+  // separately. Either one disables input simulation:
+  //   • mode='view'        — viewer chose to stop sending inputs
+  //   • controlLocked=true — host forbids inputs even if viewer wants control
+  // Effective allowed = (mode === 'control') && !controlLocked.
+  private viewerMode: 'control' | 'view' = 'control';
+  // Host-side: true once host clicks "lock control". Persisted on the host
+  // for the lifetime of the session and broadcast to the viewer so its UI
+  // can show a banner + grey out the Control switch.
+  private controlLocked: boolean = false;
+  // Viewer-side mirror — set when host pushes a control-lock message.
+  private remoteControlLocked: boolean = false;
+
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
   }
@@ -148,6 +161,10 @@ export class ConnectionManager {
 
       // Handle session ended by other party
       this.socket.on('session-ended', (_data: any) => {
+        // No active session — this is the echo of our own disconnect or a
+        // stale event from the server. Skip the toast so the user doesn't
+        // see "Phiên kết nối đã kết thúc" right after their own click.
+        if (!this.peer && !this.role) return;
         this.disconnect();
         showToast('Phiên kết nối đã kết thúc', 'info');
         // Surface the home screen so the user isn't stuck on a dead session UI.
@@ -253,12 +270,24 @@ export class ConnectionManager {
     this.role = 'host';
     this.partnerId = viewerId;
 
+    // Optionally hide the desktop wallpaper for the duration of the session
+    // — a flat solid background compresses to almost nothing, freeing
+    // bitrate for the windows the viewer actually cares about. Restored
+    // when the host tears down.
+    this.maybeHideWallpaper().catch((err: unknown) =>
+      console.warn('[Conn] hideWallpaper failed:', err),
+    );
+
     // Navigate to session page in host mode (shows chat + status panel)
     enterHostMode(viewerId, this.incomingViewerName);
 
     this.peer = new PeerConnection({
       onDataMessage: (channel, data) => {
         if (channel === CHANNEL_INPUT) {
+          // Defense in depth: even if a viewer's InputHandler is still
+          // alive (e.g. race on lock), drop input packets while locked or
+          // the viewer is in 'view' mode on this host's bookkeeping.
+          if (this.controlLocked) return;
           // Forward input to main process for simulation
           window.titanAPI?.input?.simulate(data);
         } else if (channel === CHANNEL_CHAT) {
@@ -271,6 +300,15 @@ export class ConnectionManager {
       },
       onStateChange: (state) => {
         console.log('[Conn] Host peer state:', state);
+        // Viewer dropped (disconnect, network loss, app close) — tear the
+        // host UI down so the mini-panel doesn't sit there showing "Ai đang
+        // xem máy tính bạn" with a phantom client.
+        if (state === 'disconnected' || state === 'failed') {
+          if (this.intentionalClose) return;
+          this.disconnect();
+          showToast('Đối tác đã ngắt kết nối', 'info');
+          import('../main').then(({ navigateTo }) => navigateTo('home'));
+        }
       },
     });
 
@@ -350,6 +388,8 @@ export class ConnectionManager {
           } else {
             showToast('Kết nối thành công!', 'success');
           }
+          // Record this successful connect into history + address book (if pinned).
+          this.recordSuccessfulConnect(hostId).catch(() => {});
         } else if (state === 'disconnected' || state === 'failed') {
           // Don't retry if the user (or a fatal error) intentionally tore it down.
           if (this.intentionalClose) return;
@@ -389,6 +429,80 @@ export class ConnectionManager {
         this.inputHandler?.enable();
       }, { once: true });
     }
+    this.viewerMode = mode === 'view' ? 'view' : 'control';
+  }
+
+  // === View-only / control-lock ===
+
+  /**
+   * Viewer-side: switch between sending inputs ('control') and read-only
+   * ('view'). The toolbar uses this to flip without tearing down the WebRTC
+   * stream — chat / file transfer / video keep flowing.
+   *
+   * Notifies the host so the host UI can reflect "viewer is just watching"
+   * and block any leftover input that races across the channel.
+   */
+  setViewerMode(mode: 'control' | 'view'): boolean {
+    if (this.role !== 'viewer') return false;
+    if (this.viewerMode === mode) return true;
+    this.viewerMode = mode;
+
+    const videoEl = document.getElementById('remote-video') as HTMLVideoElement | null;
+    if (mode === 'control') {
+      // Don't re-enable when host has locked control — the user can flip the
+      // switch but inputs stay suppressed until host unlocks.
+      if (!this.remoteControlLocked && videoEl && this.peer) {
+        if (!this.inputHandler) {
+          this.inputHandler = new InputHandler(videoEl, this.peer);
+        }
+        this.inputHandler.enable();
+      }
+    } else {
+      this.inputHandler?.disable();
+    }
+
+    this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'mode-change',
+      data: { mode },
+    });
+    return true;
+  }
+
+  get currentViewerMode(): 'control' | 'view' {
+    return this.viewerMode;
+  }
+
+  /**
+   * Read-only accessor for the current partner id, used by features that
+   * need to label artifacts produced during the session (e.g. recording
+   * filenames). Empty string when no session is active.
+   */
+  get partnerIdForRecording(): string {
+    return this.partnerId;
+  }
+
+  get isControlLockedRemotely(): boolean {
+    return this.remoteControlLocked;
+  }
+
+  get isControlLockedLocally(): boolean {
+    return this.controlLocked;
+  }
+
+  /**
+   * Host-side: lock or unlock the remote control. While locked, any
+   * input message that arrives on the input channel is dropped (defense in
+   * depth) and the viewer is told to disable its input handler.
+   */
+  setControlLocked(locked: boolean): boolean {
+    if (this.role !== 'host') return false;
+    this.controlLocked = locked;
+    return this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'control-lock',
+      data: { locked },
+    }) ?? false;
   }
 
   // === Handle WebRTC signals ===
@@ -737,6 +851,39 @@ export class ConnectionManager {
           this.handleRemoteActionResult(msg.data);
         }
         break;
+
+      case 'mode-change':
+        // Host receives notification that viewer flipped Control/View.
+        if (this.role === 'host') {
+          const mode = msg.data?.mode === 'view' ? 'view' : 'control';
+          import('../pages/session').then(({ updateHostViewerMode }) => {
+            updateHostViewerMode(this.partnerId, mode);
+          });
+        }
+        break;
+
+      case 'control-lock':
+        // Viewer receives lock state from host. When locked, kill the input
+        // handler immediately so a held key/button can't be exploited.
+        if (this.role === 'viewer') {
+          const locked = !!msg.data?.locked;
+          this.remoteControlLocked = locked;
+          if (locked) {
+            this.inputHandler?.disable();
+          } else if (this.viewerMode === 'control') {
+            const videoEl = document.getElementById('remote-video') as HTMLVideoElement | null;
+            if (videoEl && this.peer) {
+              if (!this.inputHandler) {
+                this.inputHandler = new InputHandler(videoEl, this.peer);
+              }
+              this.inputHandler.enable();
+            }
+          }
+          import('../pages/session').then(({ updateRemoteControlLock }) => {
+            updateRemoteControlLock(locked);
+          });
+        }
+        break;
     }
   }
 
@@ -870,6 +1017,11 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
+    // Tell the other side we're tearing down on purpose, so they don't sit
+    // on the session UI waiting (host) or burn through reconnect attempts (viewer).
+    if (this.partnerId && this.socket?.connected) {
+      this.socket.emit('peer-disconnect', { toId: this.partnerId });
+    }
     this.viewerCredentials = null;
     this.inputHandler?.disable();
     this.peer?.close();
@@ -877,9 +1029,15 @@ export class ConnectionManager {
     this.inputHandler = null;
     if (this.role === 'host') {
       exitHostMode();
+      // Always try to restore — restoreWallpaper is a no-op when the user
+      // had hideWallpaper turned off, so we don't need to track the flag.
+      window.titanAPI?.wallpaper?.restore().catch((err: unknown) =>
+        console.warn('[Conn] restoreWallpaper failed:', err),
+      );
     }
     this.role = null;
     this.partnerId = '';
+    this.historyRecordedFor = null;
   }
 
   disconnectAll(): void {
@@ -893,7 +1051,54 @@ export class ConnectionManager {
     return this.socket?.connected ?? false;
   }
 
+  /**
+   * Persist a successful viewer connect into the local history list and bump
+   * the matching address-book entry's lastConnectedAt. Idempotent for the
+   * lifetime of the current session — we only record the first transition to
+   * the connected state, not every ICE flap.
+   */
+  private historyRecordedFor: string | null = null;
+  private async recordSuccessfulConnect(hostId: string): Promise<void> {
+    if (!hostId || hostId.length < 9) return;
+    if (this.historyRecordedFor === hostId) return;
+    this.historyRecordedFor = hostId;
+
+    const api = (window as any).titanAPI;
+    try {
+      await api?.history?.add({
+        machineId: hostId,
+        machineName: '',
+        lastConnected: Date.now(),
+        totalSessions: 1,
+      });
+    } catch {
+      // best-effort
+    }
+    try {
+      const list = (await api?.addressBook?.get()) || [];
+      const match = list.find((e: any) => e.machineId === hostId);
+      if (match) await api?.addressBook?.touch(match.id);
+    } catch {
+      // best-effort
+    }
+  }
+
   // === Auto-reconnect (viewer-side) ===
+
+  /**
+   * Read the user's wallpaper preference from settings and ask the main
+   * process to blank the desktop. Best-effort — failures shouldn't block
+   * the session from coming up. Restored from disconnect().
+   */
+  private async maybeHideWallpaper(): Promise<void> {
+    try {
+      const settings = await window.titanAPI?.settings?.get();
+      if (!settings?.hideWallpaper) return;
+      await window.titanAPI?.wallpaper?.hide();
+    } catch (err) {
+      console.warn('[Conn] maybeHideWallpaper error:', err);
+    }
+  }
 
   /**
    * Public hook called by the session UI right before the user fires a

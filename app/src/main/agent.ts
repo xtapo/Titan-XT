@@ -8,6 +8,8 @@ import { setupInputSimulator } from './input-simulator';
 import { setupScreenCapture } from './screen-capture';
 import { setupFileTransfer } from './file-transfer';
 import { setupSystemActions } from './system-actions';
+import { setupRecording, closeAllRecordings } from './recording';
+import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -241,6 +243,13 @@ export function startAgent(): void {
     setupScreenCapture();
     setupFileTransfer();
     setupSystemActions();
+    setupRecording();
+    setupWallpaper();
+    // If the previous run crashed mid-session, the user's wallpaper is still
+    // blanked. Put it back before the window even shows up.
+    restoreOnStartup().catch((err) => {
+      console.warn('[Main] wallpaper startup recovery failed:', err);
+    });
 
     createMainWindow();
     createTray();
@@ -264,5 +273,17 @@ export function startAgent(): void {
         app.quit();
       }
     }
+  });
+
+  // Flush any in-flight recordings to disk before the process exits.
+  app.on('before-quit', () => {
+    closeAllRecordings().catch((err) => {
+      console.warn('[Main] closeAllRecordings failed:', err);
+    });
+    // Best-effort: never leave the user without their wallpaper if they
+    // quit mid-session. restoreWallpaper is a no-op when nothing was hidden.
+    restoreWallpaper().catch((err) => {
+      console.warn('[Main] wallpaper restore on quit failed:', err);
+    });
   });
 }

@@ -96,9 +96,13 @@ export interface SystemMessage {
     | 'pong'
     | 'quality'
     | 'remote-action'
-    | 'remote-action-result';
+    | 'remote-action-result'
+    | 'mode-change'
+    | 'control-lock';
   data: any;
 }
+
+export type ViewerMode = 'control' | 'view';
 
 // --- Union Type ---
 export type DataChannelMessage =

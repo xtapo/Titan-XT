@@ -121,9 +121,17 @@ export async function renderHomePage() {
 
         <div class="field-group">
           <label class="field-label">Partner ID</label>
-          <input type="text" id="partner-id" class="input-field input-id"
-                 placeholder="Nhập ID đối tác" maxlength="11"
-                 autocomplete="off" spellcheck="false" />
+          <div class="partner-id-wrap">
+            <input type="text" id="partner-id" class="input-field input-id"
+                   placeholder="Nhập ID đối tác" maxlength="11"
+                   autocomplete="off" spellcheck="false" />
+            <button type="button" class="btn-id-dropdown" id="btn-id-dropdown" title="Lịch sử & Máy của tôi">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            <div class="id-dropdown" id="id-dropdown"></div>
+          </div>
         </div>
 
         <div class="field-group">
@@ -155,20 +163,8 @@ export async function renderHomePage() {
       </div>
     </div>
 
-    <!-- History -->
-    <div class="history-section animate-fadeIn" style="animation-delay:0.2s">
-      <div class="history-header">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-          </svg>
-          Kết nối gần đây
-        </h3>
-      </div>
-      <div class="history-list" id="history-list">
-        <div class="history-empty">Chưa có lịch sử kết nối</div>
-      </div>
-    </div>
+    <!-- History (legacy slot, kept hidden — dropdown above replaces it). -->
+    <div id="history-section" style="display:none"></div>
 
     <div class="home-footer">
       <button class="btn-text" id="btn-settings">
@@ -177,13 +173,29 @@ export async function renderHomePage() {
         </svg>
         Cài đặt
       </button>
-      <span class="version-text">v1.0.0</span>
+      <span class="version-text" id="app-version-text">v…</span>
     </div>
   `;
 
   setupHomeEvents();
-  loadHistory();
   updateStatus('online');
+  applyAppVersion();
+}
+
+/**
+ * Pull the real app version from main (electron app.getVersion → package.json)
+ * so the home footer doesn't get stuck showing the build-time placeholder.
+ */
+async function applyAppVersion(): Promise<void> {
+  const el = document.getElementById('app-version-text');
+  if (!el) return;
+  try {
+    const info = await window.titanAPI?.app?.getInfo?.();
+    const v = info?.version;
+    if (v) el.textContent = `v${v}`;
+  } catch {
+    // Best-effort — leave the placeholder if main is unavailable.
+  }
 }
 
 /**
@@ -254,8 +266,213 @@ function setupHomeEvents() {
   // Connect button
   connectBtn?.addEventListener('click', handleConnect);
 
+  // ID dropdown — recent history + pinned address book entries
+  setupIdDropdown();
+
   // Settings modal
   document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
+}
+
+/**
+ * Wire the Partner-ID dropdown that combines pinned (Address Book) entries
+ * and recent connection history. Opens on focus / chevron click / typing,
+ * closes on outside click or Escape.
+ */
+function setupIdDropdown() {
+  const wrap = document.querySelector('.partner-id-wrap') as HTMLElement | null;
+  const input = document.getElementById('partner-id') as HTMLInputElement | null;
+  const btn = document.getElementById('btn-id-dropdown') as HTMLButtonElement | null;
+  const dd = document.getElementById('id-dropdown') as HTMLElement | null;
+  if (!wrap || !input || !btn || !dd) return;
+
+  const open = () => {
+    renderIdDropdown(input.value);
+    wrap.classList.add('open');
+  };
+  const close = () => wrap.classList.remove('open');
+  const toggle = () => {
+    if (wrap.classList.contains('open')) close();
+    else open();
+  };
+
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggle();
+    if (wrap.classList.contains('open')) input.focus();
+  });
+
+  input.addEventListener('focus', () => open());
+  input.addEventListener('input', () => renderIdDropdown(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      close();
+      input.blur();
+    }
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    if (!wrap.contains(e.target as Node)) close();
+  });
+}
+
+interface DropdownItem {
+  source: 'pinned' | 'history';
+  machineId: string;
+  alias?: string;
+  machineName?: string;
+  group?: string;
+  password?: string;
+  defaultMode?: 'control' | 'view';
+  favorite?: boolean;
+  lastConnectedAt?: number;
+  abId?: string;
+}
+
+/**
+ * Build the dropdown body from Address Book + history. Pinned entries first
+ * (favorites on top), then recent history that isn't already pinned. Filters
+ * by the current input text against id, alias, group, and machine name.
+ */
+async function renderIdDropdown(filter: string) {
+  const dd = document.getElementById('id-dropdown');
+  if (!dd) return;
+
+  const q = (filter || '').replace(/\s/g, '').toLowerCase();
+  let pinned: any[] = [];
+  let history: any[] = [];
+  try {
+    pinned = (await window.titanAPI?.addressBook?.get()) || [];
+  } catch { /* ignore */ }
+  try {
+    history = (await window.titanAPI?.history?.get()) || [];
+  } catch { /* ignore */ }
+
+  const pinnedItems: DropdownItem[] = pinned.map((p: any) => ({
+    source: 'pinned',
+    machineId: p.machineId,
+    alias: p.alias,
+    group: p.group,
+    password: p.password,
+    defaultMode: p.defaultMode || 'control',
+    favorite: !!p.favorite,
+    lastConnectedAt: p.lastConnectedAt,
+    abId: p.id,
+  }));
+  const pinnedIds = new Set(pinnedItems.map((p) => p.machineId));
+  const historyItems: DropdownItem[] = history
+    .filter((h: any) => !pinnedIds.has(h.machineId))
+    .map((h: any) => ({
+      source: 'history',
+      machineId: h.machineId,
+      machineName: h.machineName,
+      lastConnectedAt: h.lastConnected,
+    }));
+
+  pinnedItems.sort((a, b) => {
+    if ((a.favorite ? 1 : 0) !== (b.favorite ? 1 : 0)) return (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0);
+    return (b.lastConnectedAt || 0) - (a.lastConnectedAt || 0);
+  });
+
+  const matches = (it: DropdownItem) => {
+    if (!q) return true;
+    const hay = `${it.machineId} ${it.alias || ''} ${it.group || ''} ${it.machineName || ''}`.toLowerCase();
+    return hay.includes(q);
+  };
+
+  const filteredPinned = pinnedItems.filter(matches);
+  const filteredHistory = historyItems.filter(matches);
+
+  if (filteredPinned.length === 0 && filteredHistory.length === 0) {
+    dd.innerHTML = `
+      <div class="id-dd-empty">
+        ${q ? 'Không tìm thấy máy phù hợp' : 'Chưa có lịch sử kết nối'}
+      </div>
+    `;
+    return;
+  }
+
+  const renderItem = (it: DropdownItem) => {
+    const idFmt = formatId(it.machineId);
+    const title = it.alias || it.machineName || idFmt;
+    const subline = it.alias
+      ? `${idFmt}${it.group ? ` · ${escapeHtml(it.group)}` : ''}`
+      : (it.machineName ? idFmt : timeAgo(it.lastConnectedAt || 0));
+    const star = it.source === 'pinned' && it.favorite ? '<span class="id-dd-star" title="Yêu thích">★</span>' : '';
+    const lock = it.source === 'pinned'
+      ? (it.password ? '<span class="id-dd-lock" title="Đã lưu mật khẩu">🔒</span>' : '<span class="id-dd-lock dim" title="Chưa lưu mật khẩu">🔓</span>')
+      : '';
+    const connectAttr = it.source === 'pinned' && it.password
+      ? `data-action="quick-connect" data-id="${escapeHtml(it.machineId)}" data-pw="${escapeHtml(it.password)}" data-mode="${it.defaultMode || 'control'}" data-ab="${escapeHtml(it.abId || '')}"`
+      : `data-action="fill-id" data-id="${escapeHtml(it.machineId)}"`;
+
+    return `
+      <button type="button" class="id-dd-item" ${connectAttr}>
+        ${star}
+        <div class="id-dd-text">
+          <span class="id-dd-title">${escapeHtml(title)}</span>
+          <span class="id-dd-sub">${subline}</span>
+        </div>
+        ${lock}
+        ${it.source === 'pinned' && it.password
+          ? '<span class="id-dd-cta" title="Kết nối ngay">⚡</span>'
+          : '<span class="id-dd-cta dim" title="Điền ID">↵</span>'}
+      </button>
+    `;
+  };
+
+  let html = '';
+  if (filteredPinned.length > 0) {
+    html += `<div class="id-dd-section">Máy của tôi</div>`;
+    html += filteredPinned.map(renderItem).join('');
+  }
+  if (filteredHistory.length > 0) {
+    html += `<div class="id-dd-section">Kết nối gần đây</div>`;
+    html += filteredHistory.slice(0, 8).map(renderItem).join('');
+  }
+  dd.innerHTML = html;
+
+  dd.querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
+    el.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const action = el.dataset.action;
+      const id = el.dataset.id || '';
+      if (action === 'fill-id') {
+        const input = document.getElementById('partner-id') as HTMLInputElement;
+        if (input) {
+          input.value = formatIdInput(id);
+          validateConnectForm();
+          input.focus();
+        }
+        document.querySelector('.partner-id-wrap')?.classList.remove('open');
+        const passInput = document.getElementById('partner-password') as HTMLInputElement | null;
+        passInput?.focus();
+      } else if (action === 'quick-connect') {
+        const password = el.dataset.pw || '';
+        const mode = (el.dataset.mode || 'control') as 'control' | 'view';
+        const abId = el.dataset.ab || '';
+        document.querySelector('.partner-id-wrap')?.classList.remove('open');
+        if (abId) {
+          window.titanAPI?.addressBook?.touch(abId).catch(() => {});
+        }
+        showToast(`Đang kết nối đến ${formatId(id)}...`, 'info');
+        (window as any).__sessionInfo = { partnerId: id, password, mode };
+        navigateTo('session');
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('start-session', {
+            detail: { partnerId: id, password, mode },
+          }));
+        }, 200);
+      }
+    });
+  });
+}
+
+function escapeHtml(s: string): string {
+  return (s || '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c] as string);
 }
 
 /**
@@ -300,6 +517,16 @@ async function openSettingsModal() {
               <p class="field-hint">Khi bật, mỗi file nhận được sẽ mở hộp thoại Save As.</p>
             </div>
           </div>
+          <div class="settings-section">
+            <h3>Hiệu năng khi được điều khiển</h3>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-hide-wallpaper" />
+                <span>Tắt hình nền desktop khi có người kết nối</span>
+              </label>
+              <p class="field-hint">Giúp giảm băng thông và tăng độ mượt khi mạng yếu. Hình nền sẽ tự động phục hồi khi ngắt kết nối.</p>
+            </div>
+          </div>
         </div>
         <div class="settings-footer">
           <button class="btn-text" data-close>Hủy</button>
@@ -333,10 +560,12 @@ async function openSettingsModal() {
     document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
       const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
       const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
+      const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
       try {
         await window.titanAPI?.settings?.update({
           downloadFolder: folderInput?.value || '',
           askBeforeSave: !!askInput?.checked,
+          hideWallpaper: !!hideWpInput?.checked,
         });
         showToast('Đã lưu cài đặt', 'success');
         modal!.classList.remove('open');
@@ -351,8 +580,10 @@ async function openSettingsModal() {
     const settings = await window.titanAPI?.settings?.get();
     const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
     const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
+    const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
     if (folderInput) folderInput.value = settings?.downloadFolder || '';
     if (askInput) askInput.checked = !!settings?.askBeforeSave;
+    if (hideWpInput) hideWpInput.checked = !!settings?.hideWallpaper;
   } catch {
     // best-effort
   }
@@ -454,50 +685,4 @@ function updateStatus(status: 'online' | 'offline' | 'connecting') {
     };
     text.textContent = labels[status];
   }
-}
-
-/**
- * Load connection history
- */
-async function loadHistory() {
-  const list = document.getElementById('history-list');
-  if (!list) return;
-
-  let history: any[] = [];
-  try {
-    if (window.titanAPI?.history) {
-      history = await window.titanAPI.history.get();
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  if (!history || history.length === 0) {
-    list.innerHTML = '<div class="history-empty">Chưa có lịch sử kết nối</div>';
-    return;
-  }
-
-  list.innerHTML = history.map((h: any) => `
-    <div class="history-item">
-      <div class="history-item-info">
-        <span class="history-item-id">${formatId(h.machineId)}</span>
-        <span class="history-item-name">${h.machineName || 'Unknown'}</span>
-      </div>
-      <span class="history-item-time">${timeAgo(h.lastConnected)}</span>
-      <button class="btn-reconnect" data-id="${h.machineId}">Kết nối</button>
-    </div>
-  `).join('');
-
-  // Reconnect buttons
-  list.querySelectorAll('.btn-reconnect').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = (btn as HTMLElement).dataset.id || '';
-      const input = document.getElementById('partner-id') as HTMLInputElement;
-      if (input) {
-        input.value = formatIdInput(id);
-        input.focus();
-        validateConnectForm();
-      }
-    });
-  });
 }

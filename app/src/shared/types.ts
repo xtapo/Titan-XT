@@ -26,6 +26,38 @@ export interface ConnectionHistory {
   totalSessions: number;
 }
 
+/**
+ * A pinned/saved machine in the user's address book ("Máy của tôi").
+ * Lets users 1-click connect without retyping ID/password every time.
+ */
+export interface AddressBookEntry {
+  /** Unique entry id (uuid-ish, generated client-side). */
+  id: string;
+  /** Friendly display name set by the user. */
+  alias: string;
+  /** 9-digit machine id of the partner. */
+  machineId: string;
+  /**
+   * Saved password. Optional — when empty the user is prompted at connect time.
+   * Stored locally only; never sent to the signal server.
+   */
+  password?: string;
+  /** Optional group/folder name (e.g. "Khách hàng", "Văn phòng"). */
+  group?: string;
+  /** Free-form tags / labels. */
+  tags?: string[];
+  /** Optional notes (location, owner, etc.). */
+  notes?: string;
+  /** Default connect mode for 1-click. */
+  defaultMode?: 'control' | 'view';
+  /** Pinned to the top of the list. */
+  favorite?: boolean;
+  /** Created-at timestamp. */
+  createdAt: number;
+  /** Last successful connect via this entry. */
+  lastConnectedAt?: number;
+}
+
 export interface AppSettings {
   signalServer: string;
   autoStart: boolean;

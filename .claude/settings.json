@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m 'fix: hide viewer cursor over remote video to prevent double pointer *)",
+      "Bash(git push *)"
+    ]
+  }
+}

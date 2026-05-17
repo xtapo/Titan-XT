@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { AppSettings, ConnectionHistory } from '../shared/types';
+import { AppSettings, ConnectionHistory, AddressBookEntry } from '../shared/types';
 import { DEFAULT_SIGNAL_SERVER, DEFAULT_FPS } from '../shared/constants';
 
 let store: any = null;
@@ -29,6 +29,7 @@ export function getStore(): any {
         password: '',
         settings: defaultSettings,
         history: [],
+        addressBook: [],
       },
     });
   }
@@ -84,5 +85,54 @@ export function setupStore(): void {
   ipcMain.handle('history:clear', () => {
     s.set('history', []);
     return [];
+  });
+
+  // === Address Book ("Máy của tôi") ===
+  // Stored locally only. Passwords (when saved) never leave this machine.
+  ipcMain.handle('addressBook:get', () => {
+    return s.get('addressBook', []) as AddressBookEntry[];
+  });
+
+  ipcMain.handle('addressBook:add', (_event: any, entry: AddressBookEntry) => {
+    const list = s.get('addressBook', []) as AddressBookEntry[];
+    const existing = list.findIndex((e) => e.id === entry.id);
+    const normalized: AddressBookEntry = {
+      ...entry,
+      machineId: (entry.machineId || '').replace(/\D/g, ''),
+      tags: Array.isArray(entry.tags) ? entry.tags : [],
+      createdAt: entry.createdAt || Date.now(),
+    };
+    if (existing >= 0) {
+      list[existing] = { ...list[existing], ...normalized };
+    } else {
+      list.unshift(normalized);
+    }
+    s.set('addressBook', list);
+    return list;
+  });
+
+  ipcMain.handle('addressBook:update', (_event: any, id: string, patch: Partial<AddressBookEntry>) => {
+    const list = s.get('addressBook', []) as AddressBookEntry[];
+    const i = list.findIndex((e) => e.id === id);
+    if (i < 0) return list;
+    list[i] = { ...list[i], ...patch, id: list[i].id };
+    s.set('addressBook', list);
+    return list;
+  });
+
+  ipcMain.handle('addressBook:remove', (_event: any, id: string) => {
+    const list = s.get('addressBook', []) as AddressBookEntry[];
+    const next = list.filter((e) => e.id !== id);
+    s.set('addressBook', next);
+    return next;
+  });
+
+  ipcMain.handle('addressBook:touch', (_event: any, id: string) => {
+    const list = s.get('addressBook', []) as AddressBookEntry[];
+    const i = list.findIndex((e) => e.id === id);
+    if (i < 0) return list;
+    list[i] = { ...list[i], lastConnectedAt: Date.now() };
+    s.set('addressBook', list);
+    return list;
   });
 }

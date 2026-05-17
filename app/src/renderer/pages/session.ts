@@ -4,13 +4,22 @@
 
 import { showToast } from '../components/toast';
 import { navigateTo } from '../main';
-import { QUALITY_PROFILES, QualityPreset, DEFAULT_QUALITY } from '../../shared/constants';
+import { QUALITY_PROFILES, QualityPreset } from '../../shared/constants';
+import { SessionRecorder, formatElapsed, RecorderState } from '../lib/recorder';
 
 type DisplayFit = 'contain' | 'cover' | 'fill';
-let currentFit: DisplayFit = 'contain';
 let isHostMode = false;
 let hostPanelCollapsed = false;
-const hostViewers = new Map<string, { id: string; name: string }>();
+const hostViewers = new Map<string, { id: string; name: string; mode: 'control' | 'view' }>();
+// Host-side: mirror of ConnectionManager.controlLocked so the panel UI can
+// reflect the lock state on first paint without round-tripping through the
+// connection manager.
+let hostControlLocked = false;
+
+// Viewer-side: lazily created on first record. Kept module-scoped so the
+// indicator update + the menu entry can both reach the same instance.
+let recorder: SessionRecorder | null = null;
+let recorderPartnerId: string = '';
 
 /**
  * Render session page structure
@@ -90,6 +99,16 @@ export function renderSessionPage() {
               <svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             <div class="dropdown-menu hidden" id="menu-view">
+              <div class="dropdown-section-label">Chế độ</div>
+              <button class="dropdown-item dropdown-item-toggle" data-mode="control">
+                <span class="dropdown-item-label">Điều khiển</span>
+                <span class="dropdown-item-check" data-mode-check="control">✓</span>
+              </button>
+              <button class="dropdown-item dropdown-item-toggle" data-mode="view">
+                <span class="dropdown-item-label">Chỉ xem</span>
+                <span class="dropdown-item-check hidden" data-mode-check="view">✓</span>
+              </button>
+              <div class="dropdown-divider"></div>
               <button class="dropdown-item" data-view="fullscreen">Toàn màn hình</button>
               <button class="dropdown-item" data-view="monitor">Chọn màn hình…</button>
               <div class="dropdown-divider"></div>
@@ -132,6 +151,11 @@ export function renderSessionPage() {
             </button>
             <div class="dropdown-menu hidden" id="menu-files">
               <button class="dropdown-item" data-files="open">Mở khung truyền file</button>
+              <div class="dropdown-divider"></div>
+              <button class="dropdown-item" data-files="record-toggle" id="menu-record-toggle">
+                <span class="dropdown-item-label">Bắt đầu ghi phiên</span>
+              </button>
+              <button class="dropdown-item" data-files="record-folder">Mở thư mục bản ghi</button>
             </div>
           </div>
         </div>
@@ -148,6 +172,22 @@ export function renderSessionPage() {
             </svg>
           </button>
         </div>
+      </div>
+
+      <!-- Persistent indicator: shown to viewer when host has locked control. -->
+      <div class="control-lock-banner hidden" id="control-lock-banner">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+          <rect x="3" y="11" width="18" height="11" rx="2"/>
+          <path d="M7 11V7a5 5 0 0110 0v4"/>
+        </svg>
+        <span>Host đã khóa quyền điều khiển — bạn chỉ có thể xem</span>
+      </div>
+
+      <!-- Persistent indicator: red dot + elapsed time while a recording is in progress. -->
+      <div class="recording-indicator hidden" id="recording-indicator" title="Đang ghi phiên — bấm để dừng">
+        <span class="recording-dot"></span>
+        <span class="recording-text">REC</span>
+        <span class="recording-elapsed" id="recording-elapsed">00:00</span>
       </div>
 
       <!-- Chat Panel -->
@@ -242,9 +282,12 @@ function setupSessionEvents() {
       const view = el.dataset.view;
       const quality = el.dataset.quality as QualityPreset | undefined;
       const fit = el.dataset.fit as DisplayFit | undefined;
+      const mode = el.dataset.mode as 'control' | 'view' | undefined;
       document.getElementById('menu-view')?.classList.add('hidden');
 
-      if (view === 'fullscreen') {
+      if (mode) {
+        handleViewerModeChange(mode);
+      } else if (view === 'fullscreen') {
         const wrapper = document.getElementById('video-wrapper');
         if (wrapper) {
           if (document.fullscreenElement) {
@@ -269,7 +312,6 @@ function setupSessionEvents() {
           showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
         }
       } else if (fit) {
-        currentFit = fit;
         const video = document.getElementById('remote-video') as HTMLVideoElement | null;
         if (video) video.style.objectFit = fit;
       }
@@ -291,7 +333,15 @@ function setupSessionEvents() {
       const action = (item as HTMLElement).dataset.files;
       document.getElementById('menu-files')?.classList.add('hidden');
       if (action === 'open') openFilePanel();
+      else if (action === 'record-toggle') toggleSessionRecording();
+      else if (action === 'record-folder') openRecordingsFolder();
     });
+  });
+
+  // Recording indicator: clicking the badge stops the recording — quicker
+  // than re-opening the menu just to find the toggle.
+  document.getElementById('recording-indicator')?.addEventListener('click', () => {
+    if (recorder?.isRecording) toggleSessionRecording();
   });
 
   document.getElementById('btn-close-chat')?.addEventListener('click', () => {
@@ -365,6 +415,11 @@ function setupSessionEvents() {
       const fmtId = `${partnerId.substring(0, 3)} ${partnerId.substring(3, 6)} ${partnerId.substring(6, 9)}`;
       partnerName.textContent = `Đang kết nối đến ${fmtId}...`;
     }
+
+    // Reflect the connect-mode the user chose on the home screen in the
+    // Control/View toggle. Without this, joining as 'view' still shows a
+    // checkmark on "Điều khiển".
+    refreshViewerModeUI(mode === 'view' ? 'view' : 'control');
 
     // Start real WebRTC connection
     if (window.connectionManager) {
@@ -497,6 +552,143 @@ function openFilePanel() {
   const filePanel = document.getElementById('file-panel');
   filePanel?.classList.remove('hidden');
   chatPanel?.classList.add('hidden');
+}
+
+/**
+ * Toggle session recording on the viewer side. The MediaRecorder taps the
+ * remote video element's stream so the saved .webm captures exactly what
+ * the user sees — including any quality changes mid-session.
+ */
+async function toggleSessionRecording(): Promise<void> {
+  if (!recorder) {
+    recorder = new SessionRecorder({
+      onStateChange: (state: RecorderState) => updateRecordingUI(state),
+      onElapsed: (seconds) => {
+        const el = document.getElementById('recording-elapsed');
+        if (el) el.textContent = formatElapsed(seconds);
+      },
+      onError: (msg) => showToast(msg, 'error'),
+      onSaved: (path) => showToast(`Đã lưu bản ghi: ${path}`, 'success'),
+    });
+  }
+
+  if (recorder.isRecording) {
+    await recorder.stop();
+    return;
+  }
+
+  const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+  const stream = video?.srcObject as MediaStream | null;
+  if (!stream || stream.getVideoTracks().length === 0) {
+    showToast('Chưa có hình ảnh để ghi — chờ kết nối ổn định', 'info');
+    return;
+  }
+
+  recorderPartnerId = window.connectionManager?.partnerIdForRecording || recorderPartnerId;
+  await recorder.start(stream, recorderPartnerId);
+}
+
+/**
+ * Reflect recorder state in the toolbar label and the persistent indicator.
+ * Keeps the indicator visible from 'starting' through 'stopping' so the user
+ * always knows recording is in progress, even during the brief flush.
+ */
+function updateRecordingUI(state: RecorderState): void {
+  const indicator = document.getElementById('recording-indicator');
+  const label = document.querySelector('#menu-record-toggle .dropdown-item-label');
+  const elapsed = document.getElementById('recording-elapsed');
+  const active = state === 'recording' || state === 'starting' || state === 'stopping';
+
+  indicator?.classList.toggle('hidden', !active);
+  indicator?.classList.toggle('recording-stopping', state === 'stopping');
+
+  if (label) {
+    if (state === 'recording' || state === 'starting') {
+      label.textContent = 'Dừng ghi phiên';
+    } else if (state === 'stopping') {
+      label.textContent = 'Đang lưu...';
+    } else {
+      label.textContent = 'Bắt đầu ghi phiên';
+      if (elapsed) elapsed.textContent = '00:00';
+    }
+  }
+}
+
+/**
+ * Ask main to reveal the recordings folder in OS file explorer. Useful when
+ * the user can't remember where the file ended up.
+ */
+async function openRecordingsFolder(): Promise<void> {
+  const api = (window as any).titanAPI?.recording;
+  if (!api?.openFolder) {
+    showToast('Bản dựng này chưa hỗ trợ ghi phiên', 'info');
+    return;
+  }
+  const result = await api.openFolder();
+  if (result?.success === false) {
+    showToast(result.error || 'Không mở được thư mục', 'error');
+  }
+}
+
+/**
+ * Viewer-side: flip between sending inputs and read-only.
+ * Updates the dropdown checkmarks and lets ConnectionManager toggle the
+ * input handler. If the host has locked control, we still let the user
+ * "choose control" (so the switch reflects their intent) but the actual
+ * input handler stays off until the host unlocks.
+ */
+function handleViewerModeChange(mode: 'control' | 'view'): void {
+  const ok = window.connectionManager?.setViewerMode(mode);
+  if (ok === false) {
+    showToast('Chưa kết nối — không thể đổi chế độ', 'info');
+    return;
+  }
+  refreshViewerModeUI(mode);
+
+  if (mode === 'view') {
+    showToast('Chuyển sang chế độ chỉ xem', 'info');
+  } else if (window.connectionManager?.isControlLockedRemotely) {
+    showToast('Host đang khóa điều khiển — vẫn chỉ xem được', 'info');
+  } else {
+    showToast('Đã bật chế độ điều khiển', 'success');
+  }
+}
+
+/**
+ * Sync the View menu's mode toggle with the current state. Hides the
+ * checkmark on the unselected option and disables the "Điều khiển" entry
+ * visually when the host has locked control (to make it clear the
+ * limitation comes from the other side, not from the local toggle).
+ */
+function refreshViewerModeUI(mode: 'control' | 'view'): void {
+  const checkControl = document.querySelector('[data-mode-check="control"]');
+  const checkView = document.querySelector('[data-mode-check="view"]');
+  checkControl?.classList.toggle('hidden', mode !== 'control');
+  checkView?.classList.toggle('hidden', mode !== 'view');
+
+  const controlBtn = document.querySelector('[data-mode="control"]') as HTMLElement | null;
+  if (controlBtn) {
+    controlBtn.classList.toggle(
+      'dropdown-item-disabled',
+      !!window.connectionManager?.isControlLockedRemotely,
+    );
+  }
+}
+
+/**
+ * Called from ConnectionManager when the host pushes a control-lock state
+ * change. Updates the persistent banner over the video and refreshes the
+ * mode toggle UI so the user sees why the Control option is greyed out.
+ */
+export function updateRemoteControlLock(locked: boolean): void {
+  const banner = document.getElementById('control-lock-banner');
+  banner?.classList.toggle('hidden', !locked);
+  refreshViewerModeUI(window.connectionManager?.currentViewerMode ?? 'control');
+  if (locked) {
+    showToast('Host đã khóa quyền điều khiển', 'info');
+  } else {
+    showToast('Host đã mở khóa điều khiển', 'success');
+  }
 }
 
 /**
@@ -650,7 +842,7 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
   // Prefer the machine name sent in connect-request; fall back to the
   // formatted 9-digit id when the viewer didn't provide one.
   const displayName = viewerName?.trim() || formatViewerId(viewerId);
-  hostViewers.set(viewerId, { id: viewerId, name: displayName });
+  hostViewers.set(viewerId, { id: viewerId, name: displayName, mode: 'control' });
 
   // Hide the regular titlebar and shrink the OS window into the mini-panel.
   document.body.classList.add('host-mode');
@@ -684,6 +876,13 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
             <span class="host-panel-count" id="host-panel-count">(${hostViewers.size} client)</span>
           </div>
           <div class="host-panel-actions">
+            <button class="host-panel-iconbtn" id="host-panel-lock"
+                    title="Khóa quyền điều khiển của khách">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+                <rect x="3" y="11" width="18" height="11" rx="2"/>
+                <path d="M7 11V7a5 5 0 0110 0v4"/>
+              </svg>
+            </button>
             <button class="host-panel-iconbtn" id="host-panel-collapse" title="Thu nhỏ">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polyline points="15 18 9 12 15 6"/>
@@ -728,6 +927,7 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
 
   renderHostViewers();
   setupHostPanelEvents();
+  refreshHostLockUI();
   showToast(`${displayName} đã kết nối vào máy của bạn`, 'info');
 }
 
@@ -738,6 +938,7 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
 export function exitHostMode(): void {
   isHostMode = false;
   hostPanelCollapsed = false;
+  hostControlLocked = false;
   hostViewers.clear();
 
   document.body.classList.remove('host-mode', 'host-mode-collapsed');
@@ -766,17 +967,25 @@ function renderHostViewers(): void {
     return;
   }
   list.innerHTML = Array.from(hostViewers.values())
-    .map(
-      (v) => `
+    .map((v) => {
+      const modeBadge =
+        v.mode === 'view'
+          ? '<span class="host-panel-viewer-badge host-panel-viewer-badge-view">Chỉ xem</span>'
+          : '<span class="host-panel-viewer-badge host-panel-viewer-badge-ctrl">Điều khiển</span>';
+      return `
         <div class="host-panel-viewer">
           <span class="host-panel-viewer-dot"></span>
           <span class="host-panel-viewer-name">${v.name}</span>
-        </div>`,
-    )
+          ${modeBadge}
+        </div>`;
+    })
     .join('');
 }
 
 function setupHostPanelEvents(): void {
+  document.getElementById('host-panel-lock')?.addEventListener('click', () => {
+    toggleHostControlLock();
+  });
   document.getElementById('host-panel-collapse')?.addEventListener('click', () => {
     setHostPanelCollapsed(true);
   });
@@ -816,6 +1025,54 @@ function setHostPanelCollapsed(collapsed: boolean): void {
   hostPanelCollapsed = collapsed;
   document.body.classList.toggle('host-mode-collapsed', collapsed);
   window.titanAPI?.window?.setHostCollapsed?.(collapsed);
+}
+
+/**
+ * Host-side: toggle whether the connected viewer is allowed to send input.
+ * The actual gate lives in ConnectionManager.controlLocked; this just
+ * mirrors the state for the panel UI and pushes the change to the viewer.
+ */
+function toggleHostControlLock(): void {
+  hostControlLocked = !hostControlLocked;
+  const ok = window.connectionManager?.setControlLocked(hostControlLocked);
+  if (ok === false) {
+    // Roll back if the data channel wasn't ready — better to show the user
+    // the unchanged state than a misleading "locked" badge with no effect.
+    hostControlLocked = !hostControlLocked;
+    showToast('Chưa kết nối — chưa thể đổi trạng thái khóa', 'info');
+    return;
+  }
+  refreshHostLockUI();
+  showToast(
+    hostControlLocked
+      ? 'Đã khóa quyền điều khiển — khách chỉ xem được'
+      : 'Đã mở khóa quyền điều khiển',
+    'info',
+  );
+}
+
+/**
+ * Update the host-panel lock button to reflect the current locked state.
+ * Adds a "locked" class so the icon can show a filled padlock + accent color.
+ */
+function refreshHostLockUI(): void {
+  const btn = document.getElementById('host-panel-lock');
+  if (!btn) return;
+  btn.classList.toggle('host-panel-iconbtn-locked', hostControlLocked);
+  btn.title = hostControlLocked
+    ? 'Mở khóa điều khiển (khách đang chỉ xem)'
+    : 'Khóa quyền điều khiển của khách';
+}
+
+/**
+ * Called from ConnectionManager when the viewer flips its Control/View
+ * switch. Updates the per-viewer badge in the host panel.
+ */
+export function updateHostViewerMode(viewerId: string, mode: 'control' | 'view'): void {
+  const entry = hostViewers.get(viewerId);
+  if (!entry) return;
+  entry.mode = mode;
+  renderHostViewers();
 }
 
 /**
@@ -1008,6 +1265,12 @@ export function hideReconnectingState(): void {
  * Handle disconnect
  */
 function handleDisconnect() {
+  // If a recording is still running, flush + save it before tearing down
+  // the stream — otherwise MediaRecorder loses the tail of the session.
+  if (recorder?.isRecording) {
+    recorder.stop().catch(() => {});
+  }
+
   // Tear down WebRTC peer + input handler so we don't leave a live session behind.
   try {
     window.connectionManager?.disconnect();

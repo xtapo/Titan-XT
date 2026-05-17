@@ -64,6 +64,18 @@ contextBridge.exposeInMainWorld('titanAPI', {
     selectFolder: () => ipcRenderer.invoke('dialog:selectFolder') as Promise<string | null>,
   },
 
+  // === Session Recording ===
+  recording: {
+    start: (opts: { partnerId?: string; extension?: string; mimeType?: string }) =>
+      ipcRenderer.invoke('recording:start', opts) as Promise<{ id: string; path: string }>,
+    appendChunk: (opts: { id: string; data: string }) =>
+      ipcRenderer.invoke('recording:appendChunk', opts) as Promise<{ success: boolean; error?: string }>,
+    stop: (opts: { id: string; discard?: boolean }) =>
+      ipcRenderer.invoke('recording:stop', opts) as Promise<{ success: boolean; path?: string | null; error?: string }>,
+    openFolder: () =>
+      ipcRenderer.invoke('recording:openFolder') as Promise<{ success: boolean; path?: string; error?: string }>,
+  },
+
   // === History ===
   history: {
     get: () => ipcRenderer.invoke('history:get'),
@@ -71,10 +83,25 @@ contextBridge.exposeInMainWorld('titanAPI', {
     clear: () => ipcRenderer.invoke('history:clear'),
   },
 
+  // === Address Book ("Máy của tôi") ===
+  addressBook: {
+    get: () => ipcRenderer.invoke('addressBook:get'),
+    add: (entry: any) => ipcRenderer.invoke('addressBook:add', entry),
+    update: (id: string, patch: any) => ipcRenderer.invoke('addressBook:update', id, patch),
+    remove: (id: string) => ipcRenderer.invoke('addressBook:remove', id),
+    touch: (id: string) => ipcRenderer.invoke('addressBook:touch', id),
+  },
+
   // === Settings ===
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (settings: any) => ipcRenderer.invoke('settings:update', settings),
+  },
+
+  // === Wallpaper (host-side perf optimization) ===
+  wallpaper: {
+    hide: () => ipcRenderer.invoke('wallpaper:hide') as Promise<{ success: boolean; error?: string }>,
+    restore: () => ipcRenderer.invoke('wallpaper:restore') as Promise<{ success: boolean; error?: string }>,
   },
 
   // === App Info ===

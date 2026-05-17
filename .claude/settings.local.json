@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(gh run *)",
+      "PowerShell(gh run list --workflow=release.yml --limit 3)",
+      "Bash(git commit *)"
     ]
   }
 }

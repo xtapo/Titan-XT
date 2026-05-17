@@ -286,6 +286,121 @@
   color: #8a93a3;
 }
 
+/* Mode toggle items inside the View dropdown — show a leading checkmark
+   slot so both options align even when only one is selected. */
+.session-toolbar .dropdown-item-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dropdown-item-check {
+  color: #1f4ea1;
+  font-weight: 700;
+  font-size: 13px;
+  width: 12px;
+  text-align: right;
+}
+
+.dropdown-item-check.hidden { visibility: hidden; }
+
+/* Greyed-out look when host has locked control: clarifies that the limit
+   comes from the other side, not from the local UI being broken. */
+.session-toolbar .dropdown-item-disabled {
+  opacity: 0.55;
+}
+
+.session-toolbar .dropdown-item-disabled::after {
+  content: ' (host đang khóa)';
+  font-size: 10px;
+  color: #8a93a3;
+  margin-left: 4px;
+}
+
+/* Persistent banner shown to the viewer while host has locked control.
+   Sits below the toolbar so it doesn't overlap the partner name when the
+   toolbar is expanded. */
+.control-lock-banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(229, 57, 53, 0.92);
+  color: #fff;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  z-index: 18;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.control-lock-banner.hidden { display: none; }
+
+/* Recording indicator: red REC dot + elapsed time, top-left of the video.
+   Sits clear of the centered toolbar/lock-banner so neither blocks it. */
+.recording-indicator {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 8px;
+  background: rgba(20, 20, 24, 0.78);
+  color: #fff;
+  border-radius: 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+  z-index: 19;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms ease;
+}
+
+.recording-indicator:hover { background: rgba(40, 40, 48, 0.9); }
+
+.recording-indicator.hidden { display: none; }
+
+.recording-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff3b3b;
+  box-shadow: 0 0 6px rgba(255, 59, 59, 0.8);
+  animation: recordingPulse 1.2s ease-in-out infinite;
+}
+
+.recording-text { color: #ff3b3b; }
+
+.recording-elapsed {
+  color: #d4d4d4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* While the recorder is flushing the final blob, swap the pulsing red dot
+   for a static amber so the user can tell saving from active recording. */
+.recording-indicator.recording-stopping .recording-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+  animation: none;
+}
+
+.recording-indicator.recording-stopping .recording-text { color: #f59e0b; }
+
+@keyframes recordingPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
 .badge {
   min-width: 16px;
   height: 16px;
@@ -733,6 +848,43 @@ body.host-mode-collapsed .host-panel-body { display: none; }
   background: #e53935;
 }
 
+/* Active "locked" state for the lock toggle in the host panel header.
+   Stays accent-orange so the host can see at a glance that the viewer is
+   currently restricted to view-only. */
+.host-panel-iconbtn-locked {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffd86b;
+}
+
+.host-panel-iconbtn-locked:hover {
+  background: rgba(255, 255, 255, 0.28);
+  color: #ffd86b;
+}
+
+/* Per-viewer mode badge in the "Ai đang xem" list. Lets the host see at a
+   glance whether each connected viewer is controlling or just watching. */
+.host-panel-viewer-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.host-panel-viewer-badge-ctrl {
+  background: rgba(34, 139, 230, 0.14);
+  color: #1f4ea1;
+  border: 1px solid rgba(34, 139, 230, 0.35);
+}
+
+.host-panel-viewer-badge-view {
+  background: rgba(255, 184, 0, 0.18);
+  color: #b25e00;
+  border: 1px solid rgba(255, 184, 0, 0.4);
+}
+
 .host-panel-section {
   display: flex;
   flex-direction: column;
@@ -768,6 +920,7 @@ body.host-mode-collapsed .host-panel-body { display: none; }
   padding: 2px 0;
   font-size: 12px;
   color: #1f2a37;
+  width: 100%;
 }
 
 .host-panel-viewer-dot {

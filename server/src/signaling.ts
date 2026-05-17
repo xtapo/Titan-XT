@@ -68,6 +68,12 @@ export class Signaling {
       socket.on('end-session', (data: { sessionId: string }) => {
         this.endSession(data.sessionId, socket);
       });
+
+      // === PEER DISCONNECT (intentional teardown by one side) ===
+      // Client doesn't track sessionId, so use partnerId-based lookup.
+      socket.on('peer-disconnect', (data: { toId: string }) => {
+        this.handlePeerDisconnect(socket, data);
+      });
     });
 
     // Cleanup stale connections every 30 seconds
@@ -212,6 +218,36 @@ export class Signaling {
     }
 
     console.log(`[Signal] Session ended: ${sessionId}`);
+  }
+
+  /**
+   * One side clicked "disconnect" — tell the other side to tear down its
+   * session UI so it doesn't sit there waiting (or auto-reconnecting).
+   * Reuses the 'session-ended' event the client already handles.
+   */
+  private handlePeerDisconnect(socket: Socket, data: { toId: string }): void {
+    const fromId = this.registry.getMachineId(socket.id);
+    if (!fromId || !data?.toId) return;
+
+    const targetSocketId = this.registry.getSocketId(data.toId);
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('session-ended', {
+        by: fromId,
+        reason: 'peer-disconnect',
+      });
+    }
+
+    // Drop any active session between this pair so stats reflect reality.
+    for (const [sessionId, session] of this.sessions) {
+      const involves =
+        (session.hostId === fromId && session.viewerId === data.toId) ||
+        (session.viewerId === fromId && session.hostId === data.toId);
+      if (involves) {
+        this.sessions.delete(sessionId);
+      }
+    }
+
+    console.log(`[Signal] Peer disconnect: ${fromId} → ${data.toId}`);
   }
 
   /**
