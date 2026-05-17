@@ -34,9 +34,9 @@ function createMainWindow(): void {
   });
 
   // Load renderer
-  if (process.env.NODE_ENV === 'development') {
+  if (!app.isPackaged) {
     mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    // mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
   }

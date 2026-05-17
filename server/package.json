@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Titan-XT Signal Server",
   "main": "dist/index.js",
   "scripts": {

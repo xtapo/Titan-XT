@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  titan-xt-server:
+    build: .
+    container_name: titan-xt-server
+    ports:
+      - "3456:3456"
+    environment:
+      - NODE_ENV=production
+      - PORT=3456
+    restart: unless-stopped
+    networks:
+      - titan-network
+
+networks:
+  titan-network:
+    driver: bridge
