@@ -104,6 +104,7 @@ export class PeerConnection {
     this.createDataChannels();
 
     const offer = await this.pc.createOffer();
+    if (offer.sdp) offer.sdp = this.tuneSdp(offer.sdp);
     await this.pc.setLocalDescription(offer);
     return offer;
   }
@@ -113,8 +114,58 @@ export class PeerConnection {
     this.remoteDescriptionSet = true;
     await this.flushPendingIce();
     const answer = await this.pc.createAnswer();
+    if (answer.sdp) answer.sdp = this.tuneSdp(answer.sdp);
     await this.pc.setLocalDescription(answer);
     return answer;
+  }
+
+  /**
+   * Patch the SDP to bias Chromium toward an aggressive initial bitrate.
+   *
+   * `x-google-start-bitrate` and friends aren't exposed through setParameters
+   * and the default values cap the encoder at ~300kbps for the first few
+   * seconds — visible as a blurry mush right after connect. Forcing them
+   * higher lets the screen come up sharp from the first frame.
+   *
+   * Also sets `level-asymmetry-allowed` for H.264 so both peers can pick
+   * the best level independently.
+   */
+  private tuneSdp(sdp: string): string {
+    try {
+      const startKbps = Math.round(VIDEO_START_BITRATE / 1000);
+      const minKbps = Math.round(VIDEO_START_BITRATE / 2000);
+      const maxKbps = Math.round(VIDEO_MAX_BITRATE / 1000);
+
+      // Inject x-google-* fmtp lines into every video codec's fmtp entry,
+      // preserving any existing parameters (profile-level-id etc).
+      const lines = sdp.split('\r\n');
+      const result: string[] = [];
+      let inVideoSection = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('m=video')) {
+          inVideoSection = true;
+        } else if (line.startsWith('m=')) {
+          inVideoSection = false;
+        }
+
+        if (inVideoSection && line.startsWith('a=fmtp:')) {
+          const hasGoogleParams = line.includes('x-google-start-bitrate');
+          if (!hasGoogleParams) {
+            result.push(
+              `${line};x-google-start-bitrate=${startKbps};x-google-min-bitrate=${minKbps};x-google-max-bitrate=${maxKbps}`,
+            );
+            continue;
+          }
+        }
+        result.push(line);
+      }
+      return result.join('\r\n');
+    } catch (err) {
+      console.warn('[WebRTC] SDP tune failed, using original:', err);
+      return sdp;
+    }
   }
 
   async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {

@@ -22,16 +22,17 @@ export class InputHandler {
   // so we'd rather oversample than feel laggy. Coalesced events also use
   // this same throttle bucket via getCoalescedEvents().
   private moveThrottleMs: number = 8;
-  // Local cursor overlay element — UltraViewer trick: render the pointer
-  // immediately at the viewer's mouse position so it feels instant, even
-  // while the remote video stream is still arriving with the host-rendered
-  // cursor a frame or two behind.
-  private localCursorEl: HTMLElement | null = null;
   // Latest pending mouse move — flushed on the next animation frame so we
   // never send more than one move per repaint, no matter how fast the OS
   // delivers events.
   private pendingMove: { x: number; y: number; clientX: number; clientY: number } | null = null;
   private moveRafScheduled: boolean = false;
+  // Track which keys / buttons the viewer is currently holding so we can
+  // release them all if focus is lost. Without this, alt-tabbing away while
+  // holding Ctrl leaves the host with a stuck Ctrl — every subsequent click
+  // becomes Ctrl-click and the session feels frozen.
+  private heldKeys: Set<string> = new Set();
+  private heldButtons: Set<'left' | 'right' | 'middle'> = new Set();
 
   constructor(videoEl: HTMLVideoElement, peer: PeerConnection) {
     this.videoEl = videoEl;
@@ -45,15 +46,13 @@ export class InputHandler {
     if (this.enabled) return;
     this.enabled = true;
 
-    // Hide the OS cursor over the video — the local overlay is what the user sees.
-    this.videoEl.style.cursor = 'none';
+    // Show the OS cursor over the video so the viewer always sees their own
+    // pointer. We don't draw a synthetic local cursor — Electron's
+    // desktopCapturer always captures the host's real cursor into the video
+    // stream, so adding an overlay would render two cursors at once.
+    this.videoEl.style.cursor = 'default';
     this.videoEl.tabIndex = 0;
     this.videoEl.focus();
-
-    this.localCursorEl = document.getElementById('local-cursor');
-    if (this.localCursorEl) {
-      this.localCursorEl.classList.add('visible');
-    }
 
     // Mouse events
     this.videoEl.addEventListener('mousemove', this.onMouseMove);
@@ -62,8 +61,6 @@ export class InputHandler {
     this.videoEl.addEventListener('dblclick', this.onDblClick);
     this.videoEl.addEventListener('contextmenu', this.onContextMenu);
     this.videoEl.addEventListener('wheel', this.onWheel, { passive: false });
-    this.videoEl.addEventListener('mouseleave', this.onMouseLeave);
-    this.videoEl.addEventListener('mouseenter', this.onMouseEnter);
 
     // Keyboard events
     this.videoEl.addEventListener('keydown', this.onKeyDown);
@@ -71,6 +68,12 @@ export class InputHandler {
 
     // Keep focus
     this.videoEl.addEventListener('click', () => this.videoEl.focus());
+
+    // Release stuck modifiers when the viewer window loses focus —
+    // alt-tab, popup, or notification on the viewer side leaves the host
+    // with phantom-held keys without this.
+    window.addEventListener('blur', this.onWindowBlur);
+    this.videoEl.addEventListener('blur', this.onWindowBlur);
 
     console.log('[Input] Handler enabled');
   }
@@ -82,10 +85,9 @@ export class InputHandler {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
 
-    if (this.localCursorEl) {
-      this.localCursorEl.classList.remove('visible');
-      this.localCursorEl = null;
-    }
+    // Clean release any keys/buttons still tracked as held so the host
+    // doesn't end up with stuck modifiers after the viewer disconnects.
+    this.onWindowBlur();
 
     this.videoEl.removeEventListener('mousemove', this.onMouseMove);
     this.videoEl.removeEventListener('mousedown', this.onMouseDown);
@@ -93,10 +95,10 @@ export class InputHandler {
     this.videoEl.removeEventListener('dblclick', this.onDblClick);
     this.videoEl.removeEventListener('contextmenu', this.onContextMenu);
     this.videoEl.removeEventListener('wheel', this.onWheel);
-    this.videoEl.removeEventListener('mouseleave', this.onMouseLeave);
-    this.videoEl.removeEventListener('mouseenter', this.onMouseEnter);
     this.videoEl.removeEventListener('keydown', this.onKeyDown);
     this.videoEl.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onWindowBlur);
+    this.videoEl.removeEventListener('blur', this.onWindowBlur);
 
     console.log('[Input] Handler disabled');
   }
@@ -169,15 +171,9 @@ export class InputHandler {
    * Coalesced + rAF-paced mouse move.
    * Browsers can fire mousemove far more often than the screen repaints
    * (especially with high-poll mice). Coalescing into one packet per frame
-   * keeps the data channel clean while still giving the host a smooth path.
-   * The local cursor overlay is updated immediately so the viewer feels
-   * zero input latency even before the host's frame catches up.
+   * keeps the data channel clean.
    */
   private onMouseMove = (e: MouseEvent) => {
-    // Always paint the local cursor at the latest position — this is what
-    // makes the cursor feel "instant" even on a 200ms link.
-    this.updateLocalCursor(e.clientX, e.clientY);
-
     const { x, y } = this.getRelativeCoords(e);
     this.pendingMove = { x, y, clientX: e.clientX, clientY: e.clientY };
 
@@ -210,45 +206,47 @@ export class InputHandler {
   }
 
   /**
-   * Position the local cursor overlay using a transform — single composited
-   * layer so it never blocks input or triggers layout.
+   * Drain the pending move synchronously. Called before any button event so
+   * a fast move-then-click sequence can never reach the host with `down`
+   * before the latest `move` — otherwise the click would land at the
+   * previous coalesce'd position. Trade: one extra packet per click, but
+   * input correctness comes first.
    */
-  private updateLocalCursor(clientX: number, clientY: number): void {
-    if (!this.localCursorEl) return;
-    const rect = this.videoEl.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-    this.localCursorEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  private flushMoveSync(): void {
+    const move = this.pendingMove;
+    if (!move) return;
+    this.pendingMove = null;
+    const msg: MouseMessage = { type: 'mouse', action: 'move', x: move.x, y: move.y };
+    this.peer.send(CHANNEL_INPUT, msg);
   }
 
-  private onMouseEnter = () => {
-    this.localCursorEl?.classList.add('visible');
-  };
-
-  private onMouseLeave = () => {
-    this.localCursorEl?.classList.remove('visible');
-  };
-
   private onMouseDown = (e: MouseEvent) => {
+    this.flushMoveSync();
     const { x, y } = this.getRelativeCoords(e);
+    const button = this.getButton(e);
+    this.heldButtons.add(button);
     const msg: MouseMessage = {
       type: 'mouse', action: 'down', x, y,
-      button: this.getButton(e),
+      button,
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    this.flushMoveSync();
     const { x, y } = this.getRelativeCoords(e);
+    const button = this.getButton(e);
+    this.heldButtons.delete(button);
     const msg: MouseMessage = {
       type: 'mouse', action: 'up', x, y,
-      button: this.getButton(e),
+      button,
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onDblClick = (e: MouseEvent) => {
     e.preventDefault();
+    this.flushMoveSync();
     const { x, y } = this.getRelativeCoords(e);
     const msg: MouseMessage = { type: 'mouse', action: 'dblclick', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
@@ -256,6 +254,7 @@ export class InputHandler {
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
+    this.flushMoveSync();
     const { x, y } = this.getRelativeCoords(e);
     const msg: MouseMessage = { type: 'mouse', action: 'contextmenu', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
@@ -263,6 +262,7 @@ export class InputHandler {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    this.flushMoveSync();
     const { x, y } = this.getRelativeCoords(e);
     const msg: MouseMessage = {
       type: 'mouse', action: 'scroll', x, y,
@@ -292,6 +292,7 @@ export class InputHandler {
     }
 
     // Normal key — send as-is
+    this.heldKeys.add(e.code);
     const msg: KeyMessage = {
       type: 'key', action: 'down',
       key: e.key, code: e.code,
@@ -308,6 +309,7 @@ export class InputHandler {
     // channel, so sending an orphan key-up would confuse the nut.js simulator.
     if (this.isClipboardShortcut(e)) return;
 
+    this.heldKeys.delete(e.code);
     const msg: KeyMessage = {
       type: 'key', action: 'up',
       key: e.key, code: e.code,
@@ -315,6 +317,60 @@ export class InputHandler {
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
+
+  /**
+   * Release every held key + button when the viewer window loses focus.
+   *
+   * Without this, the OS stops delivering keyup to the video element while
+   * focus is elsewhere — modifier keys held during the focus loss become
+   * "stuck" on the host. Every subsequent click then becomes Ctrl-click /
+   * Shift-click and the session feels frozen even though packets are still
+   * flowing. Same fix as VNC viewers and Parsec apply when the window blurs.
+   */
+  private onWindowBlur = () => {
+    if (!this.enabled) return;
+    if (this.heldKeys.size === 0 && this.heldButtons.size === 0) return;
+    console.log('[Input] Window blurred — releasing', this.heldKeys.size, 'keys,', this.heldButtons.size, 'buttons');
+    for (const code of this.heldKeys) {
+      this.peer.send(CHANNEL_INPUT, {
+        type: 'key', action: 'up',
+        key: this.codeToKey(code), code,
+        modifiers: [],
+      } as KeyMessage);
+    }
+    this.heldKeys.clear();
+
+    // Release any held mouse buttons at the last known coordinates so a
+    // drag interrupted by a popup doesn't leave the host in select-mode.
+    const lastX = this.pendingMove?.x ?? 0;
+    const lastY = this.pendingMove?.y ?? 0;
+    for (const button of this.heldButtons) {
+      this.peer.send(CHANNEL_INPUT, {
+        type: 'mouse', action: 'up', x: lastX, y: lastY, button,
+      } as MouseMessage);
+    }
+    this.heldButtons.clear();
+  };
+
+  /**
+   * Best-effort reverse map from KeyboardEvent.code → KeyboardEvent.key for
+   * the synthetic key-up packets we emit on blur. The host's input
+   * simulator keys off `code` first, so the recovered `key` only needs
+   * to be plausible.
+   */
+  private codeToKey(code: string): string {
+    if (code.startsWith('Key')) return code.slice(3).toLowerCase();
+    if (code.startsWith('Digit')) return code.slice(5);
+    const map: Record<string, string> = {
+      ControlLeft: 'Control', ControlRight: 'Control',
+      ShiftLeft: 'Shift', ShiftRight: 'Shift',
+      AltLeft: 'Alt', AltRight: 'Alt',
+      MetaLeft: 'Meta', MetaRight: 'Meta',
+      Space: ' ', Enter: 'Enter', Escape: 'Escape',
+      Backspace: 'Backspace', Tab: 'Tab', Delete: 'Delete',
+    };
+    return map[code] || code;
+  }
 
   // === Clipboard Sync ===
 

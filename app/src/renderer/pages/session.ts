@@ -23,10 +23,6 @@ export function renderSessionPage() {
     <div class="session-container">
       <div class="video-wrapper" id="video-wrapper">
         <video id="remote-video" autoplay playsinline muted disablepictureinpicture disableremoteplayback></video>
-        <!-- Local cursor overlay — drawn instantly on every mousemove so the
-             cursor feels responsive even while the video frame is still
-             travelling across the network. UltraViewer/Parsec do the same. -->
-        <div class="local-cursor" id="local-cursor" aria-hidden="true"></div>
         <div class="video-overlay" id="video-overlay">
           <div class="connecting-spinner">
             <div class="spinner"></div>
