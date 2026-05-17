@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "sourceMap": true
   },
-  "include": ["src/main/**/*", "src/shared/**/*"],
+  "include": ["src/main/**/*", "src/shared/**/*", "src/service/**/*", "src/worker/**/*"],
   "exclude": ["node_modules", "dist"]
 }
