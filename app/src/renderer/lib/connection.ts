@@ -24,6 +24,10 @@ import {
   HEARTBEAT_INTERVAL,
   DEFAULT_QUALITY,
   QualityPreset,
+  ADAPTIVE_RTT_DOWNGRADE_MS,
+  ADAPTIVE_RTT_UPGRADE_MS,
+  ADAPTIVE_LOSS_DOWNGRADE,
+  ADAPTIVE_DEBOUNCE_SAMPLES,
 } from '../../shared/constants';
 import {
   FileMessage,
@@ -63,6 +67,18 @@ export class ConnectionManager {
   private intentionalClose: boolean = false;
   // File transfer: incoming chunks are buffered until 'complete' arrives.
   private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number }> = new Map();
+
+  // === Adaptive quality (viewer-side) ===
+  // The viewer watches RTT + packet loss and asks the host to step the
+  // quality preset up or down. Like UltraViewer / AnyDesk reacting to a
+  // congested link by trading resolution for smooth motion. Only enabled
+  // when the user hasn't manually pinned a preset.
+  private adaptiveEnabled: boolean = true;
+  private adaptiveBadSamples: number = 0;
+  private adaptiveGoodSamples: number = 0;
+  // Wait this many sampling intervals after a tier change before reconsidering,
+  // so we don't oscillate while the new bitrate is still stabilizing.
+  private adaptiveCooldown: number = 0;
 
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
@@ -349,6 +365,7 @@ export class ConnectionManager {
             ? `${mbps.toFixed(1)}Mbps`
             : `${Math.round(stats.bitrate / 1000)}kbps`;
         }
+        this.evaluateAdaptiveQuality(stats.latency, stats.packetLoss);
       },
     });
 
@@ -574,15 +591,109 @@ export class ConnectionManager {
   /**
    * Viewer-side: request a different quality preset from the host.
    * The host re-applies sender params + capture constraints.
+   *
+   * Calling this is treated as a manual pin — the adaptive controller
+   * stops auto-adjusting so the user's choice sticks.
    */
   requestQuality(preset: QualityPreset): boolean {
     if (this.role !== 'viewer') return false;
     this.currentQuality = preset;
+    this.adaptiveEnabled = false;
+    this.adaptiveBadSamples = 0;
+    this.adaptiveGoodSamples = 0;
     return this.peer?.send(CHANNEL_SYSTEM, {
       type: 'system',
       action: 'quality',
       data: { preset },
     }) ?? false;
+  }
+
+  /**
+   * Re-enable the adaptive controller after a manual pin. Call this when
+   * the user explicitly chooses "Auto" from the quality menu.
+   */
+  setAdaptiveEnabled(enabled: boolean): void {
+    this.adaptiveEnabled = enabled;
+    this.adaptiveBadSamples = 0;
+    this.adaptiveGoodSamples = 0;
+    this.adaptiveCooldown = 0;
+  }
+
+  get isAdaptive(): boolean {
+    return this.adaptiveEnabled;
+  }
+
+  /**
+   * Step the active quality up or down based on observed RTT + loss.
+   *
+   * Step DOWN: sustained high RTT or non-trivial packet loss for N samples.
+   *   Trade resolution/bitrate for smooth motion — what UltraViewer does on a
+   *   congested link.
+   * Step UP:   sustained low RTT and zero loss for N samples.
+   *   Climb back to a sharper preset once the network looks healthy again.
+   *
+   * Cooldown after each change prevents oscillation while the encoder ramps.
+   */
+  private evaluateAdaptiveQuality(rttMs: number, lossFrac: number): void {
+    if (!this.adaptiveEnabled || this.role !== 'viewer') return;
+    if (!this.peer) return;
+    if (this.adaptiveCooldown > 0) {
+      this.adaptiveCooldown -= 1;
+      return;
+    }
+    // Stats reports of zero RTT happen briefly right after the connection
+    // forms — ignore those samples so we don't false-positive an "upgrade".
+    if (rttMs <= 0) return;
+
+    const order: QualityPreset[] = ['high', 'medium', 'low'];
+    const idx = order.indexOf(this.currentQuality);
+    if (idx === -1) return;
+
+    const isBad =
+      rttMs >= ADAPTIVE_RTT_DOWNGRADE_MS || lossFrac >= ADAPTIVE_LOSS_DOWNGRADE;
+    const isGood =
+      rttMs <= ADAPTIVE_RTT_UPGRADE_MS && lossFrac < ADAPTIVE_LOSS_DOWNGRADE / 4;
+
+    if (isBad) {
+      this.adaptiveBadSamples += 1;
+      this.adaptiveGoodSamples = 0;
+      if (this.adaptiveBadSamples >= ADAPTIVE_DEBOUNCE_SAMPLES && idx < order.length - 1) {
+        const next = order[idx + 1];
+        console.log(`[Conn] Adaptive ↓ ${this.currentQuality} → ${next} (rtt=${rttMs}ms loss=${(lossFrac * 100).toFixed(1)}%)`);
+        this.applyAdaptivePreset(next);
+      }
+    } else if (isGood) {
+      this.adaptiveGoodSamples += 1;
+      this.adaptiveBadSamples = 0;
+      // Need ~2× the patience to climb back up than to drop, so a transient
+      // burst of good samples doesn't yo-yo us into a tier we can't sustain.
+      if (this.adaptiveGoodSamples >= ADAPTIVE_DEBOUNCE_SAMPLES * 2 && idx > 0) {
+        const next = order[idx - 1];
+        console.log(`[Conn] Adaptive ↑ ${this.currentQuality} → ${next} (rtt=${rttMs}ms loss=${(lossFrac * 100).toFixed(1)}%)`);
+        this.applyAdaptivePreset(next);
+      }
+    } else {
+      // Neutral sample — slowly drain both counters so isolated spikes don't
+      // accumulate into a false trigger.
+      this.adaptiveBadSamples = Math.max(0, this.adaptiveBadSamples - 1);
+      this.adaptiveGoodSamples = Math.max(0, this.adaptiveGoodSamples - 1);
+    }
+  }
+
+  /**
+   * Apply an adaptive preset change without flipping adaptiveEnabled off
+   * (which is what requestQuality does for manual user-pinned changes).
+   */
+  private applyAdaptivePreset(preset: QualityPreset): void {
+    this.currentQuality = preset;
+    this.adaptiveBadSamples = 0;
+    this.adaptiveGoodSamples = 0;
+    this.adaptiveCooldown = ADAPTIVE_DEBOUNCE_SAMPLES;
+    this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'quality',
+      data: { preset, source: 'auto' },
+    });
   }
 
   get quality(): QualityPreset {
@@ -792,6 +903,16 @@ export class ConnectionManager {
     if (action === 'signout' || action === 'restart' || action === 'shutdown') {
       this.expectedDisconnectKind = action;
     }
+  }
+
+  /**
+   * Roll back markExpectedDisconnect — called when the action couldn't be
+   * delivered (data channel not open, etc) so the next unrelated drop
+   * doesn't sit on a long initial delay waiting for a reboot that never
+   * happened.
+   */
+  clearExpectedDisconnect(): void {
+    this.expectedDisconnectKind = null;
   }
 
   /**

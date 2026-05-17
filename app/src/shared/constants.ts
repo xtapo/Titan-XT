@@ -21,9 +21,20 @@ export const DEFAULT_MAX_WIDTH = 1920;
 export const DEFAULT_MAX_HEIGHT = 1080;
 
 // Video encoder
-export const VIDEO_MAX_BITRATE = 6_000_000; // 6 Mbps — good for 1080p screen share
-export const VIDEO_START_BITRATE = 2_500_000;
+export const VIDEO_MAX_BITRATE = 8_000_000; // 8 Mbps — headroom for 1080p screen share with motion
+export const VIDEO_START_BITRATE = 4_000_000;
+// Prefer H.264 first — hardware-accelerated on virtually every modern GPU
+// (NVENC / QuickSync / AMF) which keeps encode latency low and CPU free.
+// VP8/VP9 are software-only on most Windows builds of Chromium.
 export const PREFERRED_VIDEO_CODECS = ['video/H264', 'video/VP9', 'video/VP8'];
+
+// Adaptive quality thresholds — viewer-side auto-downgrade when the network
+// degrades (high RTT or packet loss). Tuned for screen share, not video chat.
+export const ADAPTIVE_RTT_DOWNGRADE_MS = 250; // sustained RTT above this → drop a tier
+export const ADAPTIVE_RTT_UPGRADE_MS = 90;    // RTT below this for a while → climb back up
+export const ADAPTIVE_LOSS_DOWNGRADE = 0.04;  // 4% packet loss → drop a tier
+export const ADAPTIVE_SAMPLE_INTERVAL_MS = 2_000;
+export const ADAPTIVE_DEBOUNCE_SAMPLES = 3;   // require N consecutive samples before changing tier
 
 // Quality presets — viewer picks one, host re-applies sender params + capture constraints
 export type QualityPreset = 'high' | 'medium' | 'low';

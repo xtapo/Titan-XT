@@ -21,7 +21,15 @@ export interface PeerCallbacks {
   onRemoteStream?: (stream: MediaStream) => void;
   onDataMessage?: (channel: string, data: any) => void;
   onStateChange?: (state: ConnectionState) => void;
-  onStatsUpdate?: (stats: { latency: number; fps: number; bitrate: number }) => void;
+  onStatsUpdate?: (stats: PeerStats) => void;
+}
+
+export interface PeerStats {
+  latency: number; // ms RTT
+  fps: number;
+  bitrate: number; // bits/sec
+  packetLoss: number; // 0-1 fraction
+  jitter: number; // ms
 }
 
 export class PeerConnection {
@@ -51,6 +59,22 @@ export class PeerConnection {
     this.pc.ontrack = (e) => {
       if (e.streams[0]) {
         this.callbacks.onRemoteStream?.(e.streams[0]);
+      }
+      // Tell Chromium to minimize the jitter buffer on the receiver side.
+      // Default playout buffer is tuned for video calls (smoother but ~200ms+
+      // of added latency). For screen share we'd rather see frames the moment
+      // they arrive — this is what shaves the visible "input → screen" delay
+      // closer to the network RTT.
+      try {
+        const receiver: any = e.receiver;
+        if (receiver && 'playoutDelayHint' in receiver) {
+          receiver.playoutDelayHint = 0;
+        }
+        if (receiver && 'jitterBufferTarget' in receiver) {
+          receiver.jitterBufferTarget = 0;
+        }
+      } catch {
+        // Hint not supported on this Chromium build — ignore
       }
     };
 
@@ -150,6 +174,16 @@ export class PeerConnection {
   /**
    * Set bitrate caps + initial bitrate on the video sender.
    * Without this, WebRTC starts ~300kbps and ramps slowly — unusable for 1080p screen share.
+   *
+   * Key tweaks vs default WebRTC:
+   *   - networkPriority='high' — video gets priority over data channels on
+   *     a congested link, like UltraViewer/AnyDesk reserving bandwidth
+   *     for the realtime stream.
+   *   - degradationPreference='maintain-framerate' — under congestion
+   *     drop resolution/quality first, keep motion smooth (cursor, scroll).
+   *     Screen share with stuttery 30→10fps feels worse than blurry 30fps.
+   *   - scaleResolutionDownBy=1 — never silently halve the resolution,
+   *     we already control res via track constraints in applyQualityProfile.
    */
   private async applyVideoSenderTuning(sender: RTCRtpSender): Promise<void> {
     try {
@@ -157,10 +191,13 @@ export class PeerConnection {
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
-      (params.encodings[0] as any).maxFramerate = 30;
-      // Hint initial bitrate (non-standard but respected by Chromium)
-      (params as any).degradationPreference = 'maintain-resolution';
+      const enc = params.encodings[0] as any;
+      enc.maxBitrate = VIDEO_MAX_BITRATE;
+      enc.maxFramerate = 30;
+      enc.scaleResolutionDownBy = 1;
+      enc.networkPriority = 'high';
+      enc.priority = 'high';
+      (params as any).degradationPreference = 'maintain-framerate';
       await sender.setParameters(params);
 
       // Patch the SDP-level start bitrate via setParameters above; some Chromium
@@ -250,16 +287,25 @@ export class PeerConnection {
   // === Data Channels ===
 
   private createDataChannels(): void {
-    const channels = [
-      { name: CHANNEL_INPUT, ordered: false, maxRetransmits: 0 },  // Low latency
-      { name: CHANNEL_CHAT, ordered: true },                       // Reliable
-      { name: CHANNEL_FILE, ordered: true },                       // Reliable
-      { name: CHANNEL_SYSTEM, ordered: true },                     // Reliable
+    // Input is sent as unreliable + unordered with priority='high' so a brief
+    // packet drop never stalls cursor/keystrokes — same idea as Parsec/AnyDesk
+    // shipping input on a separate prioritized lane from the video stream.
+    const channels: Array<{
+      name: string;
+      ordered: boolean;
+      maxRetransmits?: number;
+      priority?: RTCPriorityType;
+    }> = [
+      { name: CHANNEL_INPUT, ordered: false, maxRetransmits: 0, priority: 'high' },
+      { name: CHANNEL_CHAT, ordered: true },
+      { name: CHANNEL_FILE, ordered: true, priority: 'low' },
+      { name: CHANNEL_SYSTEM, ordered: true, priority: 'high' },
     ];
 
-    channels.forEach(({ name, ordered, maxRetransmits }) => {
+    channels.forEach(({ name, ordered, maxRetransmits, priority }) => {
       const opts: RTCDataChannelInit = { ordered };
       if (maxRetransmits !== undefined) opts.maxRetransmits = maxRetransmits;
+      if (priority) (opts as any).priority = priority;
       const ch = this.pc.createDataChannel(name, opts);
       this.setupDataChannel(ch);
     });
@@ -308,12 +354,16 @@ export class PeerConnection {
   private startStatsMonitor(): void {
     let lastBytes = 0;
     let lastTimestamp = 0;
+    let lastPacketsLost = 0;
+    let lastPacketsReceived = 0;
     this.statsInterval = window.setInterval(async () => {
       try {
         const stats = await this.pc.getStats();
         let latency = 0;
         let fps = 0;
         let bitrate = 0;
+        let packetLoss = 0;
+        let jitter = 0;
 
         stats.forEach((report) => {
           if (report.type === 'candidate-pair' && report.state === 'succeeded') {
@@ -321,6 +371,7 @@ export class PeerConnection {
           }
           if (report.type === 'inbound-rtp' && report.kind === 'video') {
             fps = report.framesPerSecond || 0;
+            jitter = (report.jitter || 0) * 1000; // seconds → ms
             const bytes: number = report.bytesReceived || 0;
             const ts: number = report.timestamp || 0;
             if (lastTimestamp > 0 && ts > lastTimestamp) {
@@ -329,10 +380,25 @@ export class PeerConnection {
             }
             lastBytes = bytes;
             lastTimestamp = ts;
+
+            const lost: number = report.packetsLost || 0;
+            const received: number = report.packetsReceived || 0;
+            const dLost = lost - lastPacketsLost;
+            const dReceived = received - lastPacketsReceived;
+            const denom = dLost + dReceived;
+            packetLoss = denom > 0 ? Math.max(0, dLost / denom) : 0;
+            lastPacketsLost = lost;
+            lastPacketsReceived = received;
           }
         });
 
-        this.callbacks.onStatsUpdate?.({ latency, fps: Math.round(fps), bitrate });
+        this.callbacks.onStatsUpdate?.({
+          latency,
+          fps: Math.round(fps),
+          bitrate,
+          packetLoss,
+          jitter: Math.round(jitter),
+        });
       } catch {
         // ignore
       }

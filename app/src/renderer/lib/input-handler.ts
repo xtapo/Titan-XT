@@ -18,7 +18,20 @@ export class InputHandler {
   private peer: PeerConnection;
   private enabled: boolean = false;
   private lastMoveTime: number = 0;
-  private moveThrottleMs: number = 16; // ~60fps
+  // 8ms ≈ 120 Hz. Cursor moves are tiny payloads on an unreliable channel,
+  // so we'd rather oversample than feel laggy. Coalesced events also use
+  // this same throttle bucket via getCoalescedEvents().
+  private moveThrottleMs: number = 8;
+  // Local cursor overlay element — UltraViewer trick: render the pointer
+  // immediately at the viewer's mouse position so it feels instant, even
+  // while the remote video stream is still arriving with the host-rendered
+  // cursor a frame or two behind.
+  private localCursorEl: HTMLElement | null = null;
+  // Latest pending mouse move — flushed on the next animation frame so we
+  // never send more than one move per repaint, no matter how fast the OS
+  // delivers events.
+  private pendingMove: { x: number; y: number; clientX: number; clientY: number } | null = null;
+  private moveRafScheduled: boolean = false;
 
   constructor(videoEl: HTMLVideoElement, peer: PeerConnection) {
     this.videoEl = videoEl;
@@ -32,9 +45,15 @@ export class InputHandler {
     if (this.enabled) return;
     this.enabled = true;
 
+    // Hide the OS cursor over the video — the local overlay is what the user sees.
     this.videoEl.style.cursor = 'none';
     this.videoEl.tabIndex = 0;
     this.videoEl.focus();
+
+    this.localCursorEl = document.getElementById('local-cursor');
+    if (this.localCursorEl) {
+      this.localCursorEl.classList.add('visible');
+    }
 
     // Mouse events
     this.videoEl.addEventListener('mousemove', this.onMouseMove);
@@ -43,6 +62,8 @@ export class InputHandler {
     this.videoEl.addEventListener('dblclick', this.onDblClick);
     this.videoEl.addEventListener('contextmenu', this.onContextMenu);
     this.videoEl.addEventListener('wheel', this.onWheel, { passive: false });
+    this.videoEl.addEventListener('mouseleave', this.onMouseLeave);
+    this.videoEl.addEventListener('mouseenter', this.onMouseEnter);
 
     // Keyboard events
     this.videoEl.addEventListener('keydown', this.onKeyDown);
@@ -61,12 +82,19 @@ export class InputHandler {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
 
+    if (this.localCursorEl) {
+      this.localCursorEl.classList.remove('visible');
+      this.localCursorEl = null;
+    }
+
     this.videoEl.removeEventListener('mousemove', this.onMouseMove);
     this.videoEl.removeEventListener('mousedown', this.onMouseDown);
     this.videoEl.removeEventListener('mouseup', this.onMouseUp);
     this.videoEl.removeEventListener('dblclick', this.onDblClick);
     this.videoEl.removeEventListener('contextmenu', this.onContextMenu);
     this.videoEl.removeEventListener('wheel', this.onWheel);
+    this.videoEl.removeEventListener('mouseleave', this.onMouseLeave);
+    this.videoEl.removeEventListener('mouseenter', this.onMouseEnter);
     this.videoEl.removeEventListener('keydown', this.onKeyDown);
     this.videoEl.removeEventListener('keyup', this.onKeyUp);
 
@@ -137,14 +165,68 @@ export class InputHandler {
 
   // === Mouse Handlers ===
 
+  /**
+   * Coalesced + rAF-paced mouse move.
+   * Browsers can fire mousemove far more often than the screen repaints
+   * (especially with high-poll mice). Coalescing into one packet per frame
+   * keeps the data channel clean while still giving the host a smooth path.
+   * The local cursor overlay is updated immediately so the viewer feels
+   * zero input latency even before the host's frame catches up.
+   */
   private onMouseMove = (e: MouseEvent) => {
-    const now = Date.now();
-    if (now - this.lastMoveTime < this.moveThrottleMs) return;
-    this.lastMoveTime = now;
+    // Always paint the local cursor at the latest position — this is what
+    // makes the cursor feel "instant" even on a 200ms link.
+    this.updateLocalCursor(e.clientX, e.clientY);
 
     const { x, y } = this.getRelativeCoords(e);
-    const msg: MouseMessage = { type: 'mouse', action: 'move', x, y };
-    this.peer.send(CHANNEL_INPUT, msg);
+    this.pendingMove = { x, y, clientX: e.clientX, clientY: e.clientY };
+
+    // Hard rate-limit raw send rate as a backstop — even with rAF coalescing,
+    // a foregrounded tab can repaint at 240 Hz on some monitors.
+    const now = performance.now();
+    if (now - this.lastMoveTime < this.moveThrottleMs) {
+      this.scheduleMoveFlush();
+      return;
+    }
+    this.lastMoveTime = now;
+    this.scheduleMoveFlush();
+  };
+
+  /**
+   * Flush the latest pending move on the next animation frame.
+   * Multiple mousemove events between frames collapse into a single send.
+   */
+  private scheduleMoveFlush(): void {
+    if (this.moveRafScheduled) return;
+    this.moveRafScheduled = true;
+    requestAnimationFrame(() => {
+      this.moveRafScheduled = false;
+      const move = this.pendingMove;
+      this.pendingMove = null;
+      if (!move) return;
+      const msg: MouseMessage = { type: 'mouse', action: 'move', x: move.x, y: move.y };
+      this.peer.send(CHANNEL_INPUT, msg);
+    });
+  }
+
+  /**
+   * Position the local cursor overlay using a transform — single composited
+   * layer so it never blocks input or triggers layout.
+   */
+  private updateLocalCursor(clientX: number, clientY: number): void {
+    if (!this.localCursorEl) return;
+    const rect = this.videoEl.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    this.localCursorEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }
+
+  private onMouseEnter = () => {
+    this.localCursorEl?.classList.add('visible');
+  };
+
+  private onMouseLeave = () => {
+    this.localCursorEl?.classList.remove('visible');
   };
 
   private onMouseDown = (e: MouseEvent) => {

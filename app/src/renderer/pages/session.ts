@@ -22,7 +22,11 @@ export function renderSessionPage() {
   page.innerHTML = `
     <div class="session-container">
       <div class="video-wrapper" id="video-wrapper">
-        <video id="remote-video" autoplay playsinline></video>
+        <video id="remote-video" autoplay playsinline muted disablepictureinpicture disableremoteplayback></video>
+        <!-- Local cursor overlay — drawn instantly on every mousemove so the
+             cursor feels responsive even while the video frame is still
+             travelling across the network. UltraViewer/Parsec do the same. -->
+        <div class="local-cursor" id="local-cursor" aria-hidden="true"></div>
         <div class="video-overlay" id="video-overlay">
           <div class="connecting-spinner">
             <div class="spinner"></div>
@@ -94,6 +98,7 @@ export function renderSessionPage() {
               <button class="dropdown-item" data-view="monitor">Chọn màn hình…</button>
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Chất lượng</div>
+              <button class="dropdown-item" data-quality="auto">Tự động (theo mạng)</button>
               ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
                 .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
                 .join('')}
@@ -254,6 +259,12 @@ function setupSessionEvents() {
         }
       } else if (view === 'monitor') {
         showToast('Chọn màn hình: tính năng sẽ sớm có', 'info');
+      } else if (quality === ('auto' as any)) {
+        // Re-enable the adaptive controller so the viewer climbs/descends
+        // tiers based on observed network conditions instead of the user's
+        // last manual pick.
+        window.connectionManager?.setAdaptiveEnabled?.(true);
+        showToast('Đã bật chất lượng tự động', 'success');
       } else if (quality) {
         const ok = window.connectionManager?.requestQuality(quality);
         if (ok === false) {
@@ -463,6 +474,9 @@ function runRemoteAction(action: string): void {
 
   const sent = window.connectionManager?.sendRemoteAction(action);
   if (sent === false) {
+    // Channel not open — cancel the "expected disconnect" hint we just set,
+    // otherwise the next unrelated drop would wait too long.
+    if (destructive) window.connectionManager?.clearExpectedDisconnect();
     showToast('Chưa kết nối — không thể gửi lệnh', 'error');
   } else {
     showToast(`Đã gửi lệnh: ${labels[action] || action}`, 'info');

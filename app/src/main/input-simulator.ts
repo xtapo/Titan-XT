@@ -11,6 +11,10 @@ let nutKeyboard: any = null;
 let nutScreen: any = null;
 let nutLoaded = false;
 let cachedScreenSize: { width: number; height: number } | null = null;
+// Skip a redundant setPosition() in down/up/click when the cursor is already
+// at the same physical pixel. Each call hops through nut.js → libuiohook,
+// shaving the duplicate keeps clicks feeling instant on the host.
+let lastPos: { x: number; y: number } = { x: -1, y: -1 };
 
 /**
  * Lazy-load nut.js (it's heavy and may fail on some systems)
@@ -122,24 +126,41 @@ async function handleMouse(msg: MouseMessage): Promise<void> {
   // nut.js Button: LEFT=0, MIDDLE=1, RIGHT=2.
   const btnIndex = msg.button === 'right' ? 2 : msg.button === 'middle' ? 1 : 0;
 
+  // Skip a redundant setPosition when the cursor already matches the target —
+  // saves an IPC round-trip on every button event when move+down arrive in
+  // quick succession (which is the normal case for a click).
+  const needsMove = x !== lastPos.x || y !== lastPos.y;
+
   try {
     switch (msg.action) {
       case 'move':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         break;
 
       case 'down':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         await nutMouse.pressButton(btnIndex);
         break;
 
       case 'up':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         await nutMouse.releaseButton(btnIndex);
         break;
 
       case 'click':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         if (msg.button === 'right') {
           await nutMouse.rightClick();
         } else if (msg.button === 'middle') {
@@ -150,12 +171,18 @@ async function handleMouse(msg: MouseMessage): Promise<void> {
         break;
 
       case 'dblclick':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         await nutMouse.doubleClick();
         break;
 
       case 'contextmenu':
-        await nutMouse.setPosition({ x, y });
+        if (needsMove) {
+          await nutMouse.setPosition({ x, y });
+          lastPos = { x, y };
+        }
         await nutMouse.rightClick();
         break;
 
