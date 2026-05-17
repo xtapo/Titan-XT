@@ -552,7 +552,70 @@ export class ConnectionManager {
       case 'clipboard':
         this.handleClipboardMessage(msg.data);
         break;
+
+      case 'remote-action':
+        // Only the host should ever execute these. Ignore on viewer side.
+        if (this.role === 'host') {
+          this.handleRemoteAction(msg.data);
+        }
+        break;
+
+      case 'remote-action-result':
+        if (this.role === 'viewer') {
+          this.handleRemoteActionResult(msg.data);
+        }
+        break;
     }
+  }
+
+  /**
+   * Execute a remote action on this host machine and report the result back
+   * to the viewer. Used for Lock / Sign out / Restart / Shutdown / etc.
+   */
+  private async handleRemoteAction(data: any): Promise<void> {
+    const action = data?.action as string | undefined;
+    const requestId = data?.requestId as string | undefined;
+    if (!action) return;
+    let result: { success: boolean; error?: string } = { success: false, error: 'No system API' };
+    try {
+      if ((window as any).titanAPI?.system?.execute) {
+        result = await (window as any).titanAPI.system.execute(action);
+      }
+    } catch (err: any) {
+      result = { success: false, error: err?.message || String(err) };
+    }
+    this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'remote-action-result',
+      data: { requestId, action, ...result },
+    });
+  }
+
+  /**
+   * Show the result of a remote action on the viewer side.
+   */
+  private handleRemoteActionResult(data: any): void {
+    if (!data) return;
+    if (data.success) {
+      showToast('Đã thực hiện trên máy đối tác', 'success');
+    } else {
+      showToast(`Lỗi: ${data.error || 'Không thể thực hiện'}`, 'error');
+    }
+  }
+
+  /**
+   * Viewer-side: ask the host to run a privileged system action.
+   * Returns false when the data channel isn't ready.
+   */
+  sendRemoteAction(action: string): boolean {
+    if (this.role !== 'viewer') return false;
+    return (
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'remote-action',
+        data: { action, requestId: `${Date.now()}` },
+      }) ?? false
+    );
   }
 
   // === Clipboard Sync ===

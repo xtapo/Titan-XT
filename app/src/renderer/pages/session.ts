@@ -31,76 +31,120 @@ export function renderSessionPage() {
         </div>
       </div>
 
-      <!-- Toolbar -->
-      <div class="session-toolbar" id="session-toolbar">
+      <!-- Collapsed handle: a thin tab at the top center to expand the toolbar -->
+      <button class="toolbar-handle visible" id="toolbar-handle" title="Mở thanh công cụ">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      <!-- Toolbar (TeamViewer-style: grouped dropdowns, hidden by default) -->
+      <div class="session-toolbar collapsed" id="session-toolbar">
         <div class="toolbar-left">
+          <button class="toolbar-btn btn-danger toolbar-close" id="btn-disconnect" title="Ngắt kết nối">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
           <span class="toolbar-partner" id="toolbar-partner-name">Đang kết nối...</span>
         </div>
-        <div class="toolbar-center">
-          <button class="toolbar-btn" id="btn-monitor-select" title="Chọn màn hình">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-            </svg>
-          </button>
-          <button class="toolbar-btn" id="btn-fullscreen" title="Toàn màn hình">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
-            </svg>
-          </button>
 
-          <!-- Quality dropdown (viewer side) -->
-          <div class="toolbar-dropdown" id="quality-dropdown">
-            <button class="toolbar-btn" id="btn-quality" title="Chất lượng">
+        <div class="toolbar-center">
+          <!-- Home group -->
+          <div class="toolbar-group" id="group-home">
+            <button class="toolbar-group-btn" id="btn-group-home" title="Trang chủ">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 12h4l3-9 4 18 3-9h4"/>
+                <path d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h4v-6h4v6h4a1 1 0 001-1V10"/>
               </svg>
-              <span id="quality-label" class="toolbar-btn-label">Cao</span>
+              <span>Home</span>
             </button>
-            <div class="dropdown-menu hidden" id="quality-menu">
-              ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
-                .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
-                .join('')}
+          </div>
+
+          <!-- Actions group -->
+          <div class="toolbar-group" id="group-actions">
+            <button class="toolbar-group-btn" id="btn-group-actions" title="Hành động">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+              </svg>
+              <span>Actions</span>
+              <svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu hidden" id="menu-actions">
+              <button class="dropdown-item" data-action="ctrl-alt-del">Gửi Ctrl+Alt+Del</button>
+              <button class="dropdown-item" data-action="lock">Khóa máy</button>
+              <button class="dropdown-item" data-action="signout">Đăng xuất</button>
+              <button class="dropdown-item" data-action="task-manager">Mở Task Manager</button>
+              <div class="dropdown-divider"></div>
+              <button class="dropdown-item dropdown-item-danger" data-action="restart">Khởi động lại</button>
+              <button class="dropdown-item dropdown-item-danger" data-action="shutdown">Tắt máy</button>
             </div>
           </div>
 
-          <!-- Display fit dropdown (viewer side, render-only) -->
-          <div class="toolbar-dropdown" id="fit-dropdown">
-            <button class="toolbar-btn" id="btn-fit" title="Hiển thị">
+          <!-- View group: monitor select + fullscreen + quality + display fit -->
+          <div class="toolbar-group" id="group-view">
+            <button class="toolbar-group-btn" id="btn-group-view" title="Hiển thị">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/>
+                <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
               </svg>
-              <span id="fit-label" class="toolbar-btn-label">Vừa khung</span>
+              <span>View</span>
+              <svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
-            <div class="dropdown-menu hidden" id="fit-menu">
+            <div class="dropdown-menu hidden" id="menu-view">
+              <button class="dropdown-item" data-view="fullscreen">Toàn màn hình</button>
+              <button class="dropdown-item" data-view="monitor">Chọn màn hình…</button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Chất lượng</div>
+              ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
+                .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
+                .join('')}
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Hiển thị</div>
               <button class="dropdown-item" data-fit="contain">Vừa khung</button>
               <button class="dropdown-item" data-fit="cover">Lấp đầy (cắt)</button>
               <button class="dropdown-item" data-fit="fill">Kéo dãn</button>
             </div>
           </div>
-          <div class="toolbar-separator"></div>
-          <button class="toolbar-btn" id="btn-file-transfer" title="Truyền file">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/>
-            </svg>
-          </button>
-          <button class="toolbar-btn" id="btn-chat" title="Chat">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
-            </svg>
-            <span class="badge hidden" id="chat-badge">0</span>
-          </button>
+
+          <!-- Communicate group: chat -->
+          <div class="toolbar-group" id="group-communicate">
+            <button class="toolbar-group-btn" id="btn-group-communicate" title="Liên lạc">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+              </svg>
+              <span>Communicate</span>
+              <span class="badge hidden" id="chat-badge">0</span>
+              <svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu hidden" id="menu-communicate">
+              <button class="dropdown-item" data-comm="chat">Mở chat</button>
+            </div>
+          </div>
+
+          <!-- Files & Extras group -->
+          <div class="toolbar-group" id="group-files">
+            <button class="toolbar-group-btn" id="btn-group-files" title="File &amp; Extras">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/>
+              </svg>
+              <span>Files &amp; Extras</span>
+              <svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="dropdown-menu hidden" id="menu-files">
+              <button class="dropdown-item" data-files="open">Mở khung truyền file</button>
+            </div>
+          </div>
         </div>
+
         <div class="toolbar-right">
           <span class="toolbar-stats" id="toolbar-stats">
             <span class="stat-latency" id="stat-latency">--ms</span>
             <span class="stat-fps" id="stat-fps">--fps</span>
             <span class="stat-bitrate" id="stat-bitrate">--</span>
           </span>
-          <button class="toolbar-btn btn-danger" id="btn-disconnect" title="Ngắt kết nối">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          <button class="toolbar-btn toolbar-collapse" id="btn-toolbar-collapse" title="Thu thanh công cụ">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="18 15 12 9 6 15"/>
             </svg>
-            Ngắt
           </button>
         </div>
       </div>
@@ -108,7 +152,7 @@ export function renderSessionPage() {
       <!-- Chat Panel -->
       <div class="chat-panel hidden" id="chat-panel">
         <div class="chat-header">
-          <h3>💬 Chat</h3>
+          <h3>Chat</h3>
           <button class="btn-icon" id="btn-close-chat">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -130,7 +174,7 @@ export function renderSessionPage() {
       <!-- File Panel -->
       <div class="file-panel hidden" id="file-panel">
         <div class="file-header">
-          <h3>📁 Truyền file</h3>
+          <h3>Truyền file</h3>
           <button class="btn-icon" id="btn-close-file">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -153,33 +197,6 @@ export function renderSessionPage() {
 }
 
 /**
- * Wire toggle behavior for a toolbar dropdown:
- * clicking the trigger toggles its menu and closes any others.
- */
-function setupDropdown(rootId: string, triggerId: string, menuId: string) {
-  const trigger = document.getElementById(triggerId);
-  const menu = document.getElementById(menuId);
-  if (!trigger || !menu) return;
-
-  trigger.addEventListener('click', (e) => {
-    e.stopPropagation();
-    // Close other dropdowns
-    document.querySelectorAll('.dropdown-menu').forEach((m) => {
-      if (m.id !== menuId) m.classList.add('hidden');
-    });
-    menu.classList.toggle('hidden');
-  });
-
-  // Close on outside click
-  document.addEventListener('click', (e) => {
-    const root = document.getElementById(rootId);
-    if (root && !root.contains(e.target as Node)) {
-      menu.classList.add('hidden');
-    }
-  });
-}
-
-/**
  * Setup session event listeners
  */
 function setupSessionEvents() {
@@ -188,92 +205,93 @@ function setupSessionEvents() {
     handleDisconnect();
   });
 
-  // Fullscreen
-  document.getElementById('btn-fullscreen')?.addEventListener('click', () => {
-    const wrapper = document.getElementById('video-wrapper');
-    if (wrapper) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else {
-        wrapper.requestFullscreen();
-      }
-    }
+  // Toolbar collapse / expand
+  document.getElementById('btn-toolbar-collapse')?.addEventListener('click', () => {
+    setToolbarCollapsed(true);
+  });
+  document.getElementById('toolbar-handle')?.addEventListener('click', () => {
+    setToolbarCollapsed(false);
   });
 
-  // Quality dropdown
-  setupDropdown('quality-dropdown', 'btn-quality', 'quality-menu');
-  document.querySelectorAll('#quality-menu .dropdown-item').forEach((item) => {
+  // Group dropdowns: Actions / View / Communicate / Files & Extras
+  setupGroupDropdown('group-actions', 'btn-group-actions', 'menu-actions');
+  setupGroupDropdown('group-view', 'btn-group-view', 'menu-view');
+  setupGroupDropdown('group-communicate', 'btn-group-communicate', 'menu-communicate');
+  setupGroupDropdown('group-files', 'btn-group-files', 'menu-files');
+
+  // Home — return to dashboard without disconnecting
+  document.getElementById('btn-group-home')?.addEventListener('click', () => {
+    navigateTo('home');
+  });
+
+  // Actions menu
+  document.querySelectorAll('#menu-actions .dropdown-item').forEach((item) => {
     item.addEventListener('click', () => {
-      const preset = (item as HTMLElement).dataset.quality as QualityPreset | undefined;
-      if (!preset) return;
-      const ok = window.connectionManager?.requestQuality(preset);
-      const label = document.getElementById('quality-label');
-      if (label) {
-        const map: Record<QualityPreset, string> = { high: 'Cao', medium: 'Trung bình', low: 'Thấp' };
-        label.textContent = map[preset];
-      }
-      document.getElementById('quality-menu')?.classList.add('hidden');
-      if (ok === false) {
-        showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
-      } else {
-        showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[preset].label}`, 'success');
+      const action = (item as HTMLElement).dataset.action;
+      document.getElementById('menu-actions')?.classList.add('hidden');
+      if (!action) return;
+      runRemoteAction(action);
+    });
+  });
+
+  // View menu — fullscreen + monitor + quality + display fit (consolidated)
+  document.querySelectorAll('#menu-view .dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const el = item as HTMLElement;
+      const view = el.dataset.view;
+      const quality = el.dataset.quality as QualityPreset | undefined;
+      const fit = el.dataset.fit as DisplayFit | undefined;
+      document.getElementById('menu-view')?.classList.add('hidden');
+
+      if (view === 'fullscreen') {
+        const wrapper = document.getElementById('video-wrapper');
+        if (wrapper) {
+          if (document.fullscreenElement) {
+            document.exitFullscreen();
+          } else {
+            wrapper.requestFullscreen();
+          }
+        }
+      } else if (view === 'monitor') {
+        showToast('Chọn màn hình: tính năng sẽ sớm có', 'info');
+      } else if (quality) {
+        const ok = window.connectionManager?.requestQuality(quality);
+        if (ok === false) {
+          showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
+        } else {
+          showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
+        }
+      } else if (fit) {
+        currentFit = fit;
+        const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+        if (video) video.style.objectFit = fit;
       }
     });
   });
 
-  // Display fit dropdown — render-only, doesn't touch the stream
-  setupDropdown('fit-dropdown', 'btn-fit', 'fit-menu');
-  document.querySelectorAll('#fit-menu .dropdown-item').forEach((item) => {
+  // Communicate menu — chat
+  document.querySelectorAll('#menu-communicate .dropdown-item').forEach((item) => {
     item.addEventListener('click', () => {
-      const fit = (item as HTMLElement).dataset.fit as DisplayFit | undefined;
-      if (!fit) return;
-      currentFit = fit;
-      const video = document.getElementById('remote-video') as HTMLVideoElement | null;
-      if (video) video.style.objectFit = fit;
-      const label = document.getElementById('fit-label');
-      const labelMap: Record<DisplayFit, string> = {
-        contain: 'Vừa khung',
-        cover: 'Lấp đầy (cắt)',
-        fill: 'Kéo dãn',
-      };
-      if (label) label.textContent = labelMap[fit];
-      document.getElementById('fit-menu')?.classList.add('hidden');
+      const comm = (item as HTMLElement).dataset.comm;
+      document.getElementById('menu-communicate')?.classList.add('hidden');
+      if (comm === 'chat') openChatPanel();
     });
   });
 
-  // Toggle Chat
-  document.getElementById('btn-chat')?.addEventListener('click', () => {
-    const panel = document.getElementById('chat-panel');
-    const filePanel = document.getElementById('file-panel');
-    const btn = document.getElementById('btn-chat');
-    panel?.classList.toggle('hidden');
-    filePanel?.classList.add('hidden');
-    btn?.classList.toggle('active');
-    document.getElementById('btn-file-transfer')?.classList.remove('active');
-    // Hide badge
-    const badge = document.getElementById('chat-badge');
-    if (badge) { badge.classList.add('hidden'); badge.textContent = '0'; }
+  // Files menu — open transfer panel
+  document.querySelectorAll('#menu-files .dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const action = (item as HTMLElement).dataset.files;
+      document.getElementById('menu-files')?.classList.add('hidden');
+      if (action === 'open') openFilePanel();
+    });
   });
 
   document.getElementById('btn-close-chat')?.addEventListener('click', () => {
     document.getElementById('chat-panel')?.classList.add('hidden');
-    document.getElementById('btn-chat')?.classList.remove('active');
   });
-
-  // Toggle File Panel
-  document.getElementById('btn-file-transfer')?.addEventListener('click', () => {
-    const panel = document.getElementById('file-panel');
-    const chatPanel = document.getElementById('chat-panel');
-    const btn = document.getElementById('btn-file-transfer');
-    panel?.classList.toggle('hidden');
-    chatPanel?.classList.add('hidden');
-    btn?.classList.toggle('active');
-    document.getElementById('btn-chat')?.classList.remove('active');
-  });
-
   document.getElementById('btn-close-file')?.addEventListener('click', () => {
     document.getElementById('file-panel')?.classList.add('hidden');
-    document.getElementById('btn-file-transfer')?.classList.remove('active');
   });
 
   // Chat send
@@ -349,6 +367,99 @@ function setupSessionEvents() {
       showToast('Lỗi hệ thống', 'error');
     }
   }) as EventListener);
+}
+
+/**
+ * Toolbar groups behave like menu buttons: clicking the trigger toggles
+ * the menu and closes any other open group.
+ */
+function setupGroupDropdown(rootId: string, triggerId: string, menuId: string) {
+  const trigger = document.getElementById(triggerId);
+  const menu = document.getElementById(menuId);
+  if (!trigger || !menu) return;
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.session-toolbar .dropdown-menu').forEach((m) => {
+      if (m.id !== menuId) m.classList.add('hidden');
+    });
+    menu.classList.toggle('hidden');
+  });
+
+  document.addEventListener('click', (e) => {
+    const root = document.getElementById(rootId);
+    if (root && !root.contains(e.target as Node)) {
+      menu.classList.add('hidden');
+    }
+  });
+}
+
+/**
+ * Toggle the TeamViewer-style toolbar between collapsed (just a thin
+ * handle) and expanded (full bar). Default state on a new session is
+ * collapsed so the remote screen has maximum room.
+ */
+function setToolbarCollapsed(collapsed: boolean) {
+  const toolbar = document.getElementById('session-toolbar');
+  const handle = document.getElementById('toolbar-handle');
+  if (!toolbar || !handle) return;
+  toolbar.classList.toggle('collapsed', collapsed);
+  handle.classList.toggle('visible', collapsed);
+  if (collapsed) {
+    document
+      .querySelectorAll('.session-toolbar .dropdown-menu')
+      .forEach((m) => m.classList.add('hidden'));
+  }
+}
+
+function openChatPanel() {
+  const chatPanel = document.getElementById('chat-panel');
+  const filePanel = document.getElementById('file-panel');
+  chatPanel?.classList.remove('hidden');
+  filePanel?.classList.add('hidden');
+  const badge = document.getElementById('chat-badge');
+  if (badge) {
+    badge.classList.add('hidden');
+    badge.textContent = '0';
+  }
+}
+
+function openFilePanel() {
+  const chatPanel = document.getElementById('chat-panel');
+  const filePanel = document.getElementById('file-panel');
+  filePanel?.classList.remove('hidden');
+  chatPanel?.classList.add('hidden');
+}
+
+/**
+ * Send a remote system action to the host. Destructive ones (sign-out,
+ * restart, shutdown) ask for explicit confirmation first because they
+ * cannot be undone — once the host disconnects, you've lost the session.
+ */
+function runRemoteAction(action: string): void {
+  const labels: Record<string, string> = {
+    'ctrl-alt-del': 'gửi Ctrl+Alt+Del',
+    'lock': 'khóa máy đối tác',
+    'signout': 'đăng xuất tài khoản đối tác',
+    'restart': 'khởi động lại máy đối tác',
+    'shutdown': 'tắt máy đối tác',
+    'task-manager': 'mở Task Manager',
+  };
+  const destructive = action === 'restart' || action === 'shutdown' || action === 'signout';
+  if (destructive) {
+    const ok = window.confirm(
+      `Bạn có chắc muốn ${labels[action] || action}?\n` +
+        `Thao tác này sẽ làm mất kết nối phiên hiện tại.`,
+    );
+    if (!ok) return;
+  }
+
+  const sent = window.connectionManager?.sendRemoteAction(action);
+  if (sent === false) {
+    showToast('Chưa kết nối — không thể gửi lệnh', 'error');
+  } else {
+    showToast(`Đã gửi lệnh: ${labels[action] || action}`, 'info');
+  }
 }
 
 /**

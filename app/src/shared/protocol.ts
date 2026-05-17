@@ -78,9 +78,25 @@ export type FileMessage =
   | FileErrorMessage;
 
 // --- System Messages ---
+export type RemoteActionId =
+  | 'ctrl-alt-del'
+  | 'lock'
+  | 'signout'
+  | 'restart'
+  | 'shutdown'
+  | 'task-manager';
+
 export interface SystemMessage {
   type: 'system';
-  action: 'resolution' | 'monitors' | 'clipboard' | 'ping' | 'pong' | 'quality';
+  action:
+    | 'resolution'
+    | 'monitors'
+    | 'clipboard'
+    | 'ping'
+    | 'pong'
+    | 'quality'
+    | 'remote-action'
+    | 'remote-action-result';
   data: any;
 }
 

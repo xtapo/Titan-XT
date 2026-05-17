@@ -66,145 +66,231 @@
 .session-toolbar {
   position: absolute;
   top: 0;
-  left: 0;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  background: rgba(18, 18, 26, 0.9);
-  backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(245, 247, 250, 0.98);
+  color: #1f2a37;
+  border: 1px solid #c8d2df;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
   z-index: 20;
-  transition: transform var(--transition-normal), opacity var(--transition-normal);
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 220ms ease;
+  max-width: calc(100% - 24px);
+  user-select: none;
 }
 
-.session-toolbar.auto-hide {
-  transform: translateY(-100%);
+.session-toolbar.collapsed {
+  transform: translateX(-50%) translateY(-110%);
   opacity: 0;
+  pointer-events: none;
 }
 
-.session-toolbar.auto-hide:hover,
-.session-toolbar.auto-hide.show {
-  transform: translateY(0);
-  opacity: 1;
+/* Collapsed handle: thin bar at the top center inviting the user to expand */
+.toolbar-handle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 18px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(245, 247, 250, 0.95);
+  color: #3d6bb3;
+  border: 1px solid #c8d2df;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  cursor: pointer;
+  z-index: 19;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  padding: 0;
 }
+
+.toolbar-handle:hover {
+  background: #ffffff;
+  color: #1f4ea1;
+}
+
+.toolbar-handle.visible { display: flex; }
 
 .toolbar-left, .toolbar-center, .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .toolbar-partner {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: #2f3a4a;
+  padding: 0 8px;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.toolbar-btn {
+.toolbar-close {
+  width: 24px;
+  height: 24px;
+  padding: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: none;
+  justify-content: center;
+  border-radius: 4px;
   background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
+  color: #5b6573;
+  border: none;
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
+}
+
+.toolbar-close:hover {
+  background: #e53935;
+  color: #ffffff;
+}
+
+.toolbar-collapse {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: transparent;
+  color: #5b6573;
+  border: none;
+  cursor: pointer;
+}
+
+.toolbar-collapse:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #1f2a37;
+}
+
+/* Toolbar groups: TeamViewer-style category buttons */
+.toolbar-group {
   position: relative;
 }
 
-.toolbar-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+.toolbar-group-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #2f3a4a;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  font-family: var(--font-sans);
 }
 
-.toolbar-btn.btn-danger:hover {
-  background: rgba(239, 68, 68, 0.2);
-  color: var(--danger);
+.toolbar-group-btn:hover {
+  background: rgba(91, 141, 214, 0.12);
+  color: #1f4ea1;
 }
 
-.toolbar-btn.active {
-  background: rgba(0, 212, 255, 0.1);
-  color: var(--accent-cyan);
+.toolbar-group-btn .caret {
+  margin-left: 2px;
+  color: #6b7686;
 }
 
-.toolbar-separator {
-  width: 1px;
-  height: 20px;
-  background: var(--border-subtle);
+.toolbar-group-btn .badge {
+  position: static;
+  margin-left: 2px;
 }
 
 .toolbar-stats {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);
+  color: #6b7686;
+  padding: 0 6px;
 }
 
-/* Toolbar dropdowns (quality, fit) */
-.toolbar-dropdown {
-  position: relative;
-}
-
-.toolbar-btn-label {
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.dropdown-menu {
+/* Dropdown menus inside the new toolbar (light-themed to match) */
+.session-toolbar .dropdown-menu {
   position: absolute;
   top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--bg-elevated, #1a1a22);
-  border: 1px solid var(--border-subtle, #2a2a35);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  min-width: 220px;
+  left: 0;
+  background: #ffffff;
+  color: #1f2a37;
+  border: 1px solid #c8d2df;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  min-width: 200px;
   padding: 4px;
   z-index: 50;
 }
 
-.dropdown-menu.hidden {
-  display: none;
-}
+.session-toolbar .dropdown-menu.hidden { display: none; }
 
-.dropdown-item {
+.session-toolbar .dropdown-item {
   display: block;
   width: 100%;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border: none;
   background: transparent;
-  color: var(--text-secondary);
+  color: #1f2a37;
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
+  border-radius: 4px;
+  font-family: var(--font-sans);
 }
 
-.dropdown-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+.session-toolbar .dropdown-item:hover {
+  background: rgba(91, 141, 214, 0.14);
+  color: #1f4ea1;
+}
+
+.session-toolbar .dropdown-item-danger {
+  color: #c8302e;
+}
+
+.session-toolbar .dropdown-item-danger:hover {
+  background: rgba(229, 57, 53, 0.12);
+  color: #b71c1c;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: #e3e8ef;
+  margin: 4px 6px;
+}
+
+.dropdown-section-label {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a93a3;
 }
 
 .badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 16px;
+  min-width: 16px;
   height: 16px;
+  padding: 0 4px;
   background: var(--danger);
   color: #fff;
   font-size: 9px;
   font-weight: 700;
-  border-radius: 50%;
-  display: flex;
+  border-radius: 8px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
 }

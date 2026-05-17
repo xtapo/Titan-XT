@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('titanAPI', {
     simulate: (event: any) => ipcRenderer.invoke('input:simulate', event),
   },
 
+  // === System Actions (host-side execution) ===
+  system: {
+    execute: (action: string) => ipcRenderer.invoke('system:execute', action),
+  },
+
   // === Clipboard ===
   clipboard: {
     read: () => ipcRenderer.invoke('clipboard:read') as Promise<string>,

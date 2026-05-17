@@ -7,6 +7,7 @@ import { setupStore } from './store';
 import { setupInputSimulator } from './input-simulator';
 import { setupScreenCapture } from './screen-capture';
 import { setupFileTransfer } from './file-transfer';
+import { setupSystemActions } from './system-actions';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -230,6 +231,7 @@ app.whenReady().then(() => {
   setupInputSimulator();
   setupScreenCapture();
   setupFileTransfer();
+  setupSystemActions();
 
   // Create window and tray
   createMainWindow();
