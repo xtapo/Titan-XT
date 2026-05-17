@@ -14,7 +14,10 @@
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",
-    "package:linux": "npm run build && electron-builder --linux"
+    "package:linux": "npm run build && electron-builder --linux",
+    "release": "npm run build && electron-builder --publish always",
+    "release:win": "npm run build && electron-builder --win --publish always",
+    "release:draft": "npm run build && electron-builder --publish onTagOrDraft"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.0",
