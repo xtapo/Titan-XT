@@ -164,11 +164,12 @@ export class ConnectionManager {
 
     // Capture screen and add to peer
     try {
-      // Get screen sources using Electron's desktopCapturer
-      const sources = await (navigator.mediaDevices as any).getDisplayMedia({
+      // In Electron, navigator.mediaDevices.getDisplayMedia is enabled via
+      // session.setDisplayMediaRequestHandler in the main process (screen-capture.ts).
+      // The handler picks the source; renderer constraints below only shape the stream.
+      const sources = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
         video: {
-          displaySurface: 'monitor',
           width: { max: 1920 },
           height: { max: 1080 },
           frameRate: { max: 30 },

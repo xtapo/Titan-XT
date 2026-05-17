@@ -1,4 +1,4 @@
-import { ipcMain, desktopCapturer, screen } from 'electron';
+import { ipcMain, desktopCapturer, screen, session } from 'electron';
 import { MonitorInfo } from '../shared/types';
 
 /**
@@ -34,6 +34,30 @@ async function getScreenSources(): Promise<MonitorInfo[]> {
  * Setup IPC handlers for screen capture
  */
 export function setupScreenCapture(): void {
+  // Register display media request handler so navigator.mediaDevices.getDisplayMedia()
+  // works inside Electron renderer (without this it throws NotSupportedError).
+  session.defaultSession.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        if (sources.length === 0) {
+          callback({});
+          return;
+        }
+        // Default to primary screen; renderer can later request a specific monitor
+        // by selecting via UI and re-invoking getDisplayMedia.
+        callback({ video: sources[0], audio: 'loopback' });
+      } catch (err) {
+        console.error('[Screen] Display media handler error:', err);
+        callback({});
+      }
+    },
+    { useSystemPicker: false }
+  );
+
   // Get available monitors
   ipcMain.handle('screen:getSources', async () => {
     try {
