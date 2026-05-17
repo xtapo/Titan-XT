@@ -75,7 +75,7 @@ function createMainWindow(): void {
     });
   }
 
-  if (process.env.TITAN_DEBUG === '1' || app.isPackaged) {
+  if (process.env.TITAN_DEBUG === '1') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 

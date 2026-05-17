@@ -301,6 +301,11 @@ function setupSessionEvents() {
     document.getElementById('file-panel')?.classList.add('hidden');
   });
 
+  // Make floating dialogs draggable by their header so they can be moved
+  // off the area the user is actively controlling.
+  enableDialogDrag('chat-panel', '.chat-header');
+  enableDialogDrag('file-panel', '.file-header');
+
   // Chat send
   const chatInput = document.getElementById('chat-input') as HTMLInputElement;
   document.getElementById('btn-send-chat')?.addEventListener('click', () => sendChat());
@@ -398,6 +403,62 @@ function setupGroupDropdown(rootId: string, triggerId: string, menuId: string) {
     if (root && !root.contains(e.target as Node)) {
       menu.classList.add('hidden');
     }
+  });
+}
+
+/**
+ * Make a floating dialog draggable by its header. The dialog stays inside
+ * the session container so it can't be flung off-screen, and we switch to
+ * absolute left/top once dragging starts (the CSS default is right/top).
+ */
+function enableDialogDrag(panelId: string, handleSelector: string) {
+  const panel = document.getElementById(panelId) as HTMLElement | null;
+  if (!panel) return;
+  const handle = panel.querySelector(handleSelector) as HTMLElement | null;
+  if (!handle) return;
+
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+
+  handle.addEventListener('mousedown', (e) => {
+    // Ignore clicks on the close button or any nested control inside the header.
+    if ((e.target as HTMLElement).closest('button')) return;
+    const container = panel.offsetParent as HTMLElement | null;
+    if (!container) return;
+    const rect = panel.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    startLeft = rect.left - containerRect.left;
+    startTop = rect.top - containerRect.top;
+
+    panel.style.left = `${startLeft}px`;
+    panel.style.top = `${startTop}px`;
+    panel.style.right = 'auto';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const container = panel.offsetParent as HTMLElement | null;
+    if (!container) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const maxLeft = container.clientWidth - panel.offsetWidth;
+    const maxTop = container.clientHeight - panel.offsetHeight;
+    const nextLeft = Math.max(0, Math.min(maxLeft, startLeft + dx));
+    const nextTop = Math.max(0, Math.min(maxTop, startTop + dy));
+    panel.style.left = `${nextLeft}px`;
+    panel.style.top = `${nextTop}px`;
+  });
+
+  document.addEventListener('mouseup', () => {
+    dragging = false;
   });
 }
 
@@ -578,7 +639,7 @@ function escapeHtml(s: string): string {
  * docked to the bottom-right of the screen. The panel can be collapsed
  * to a thin tab via the chevron button.
  */
-export function enterHostMode(viewerId: string): void {
+export function enterHostMode(viewerId: string, viewerName?: string): void {
   isHostMode = true;
   // Start collapsed by default — only auto-expand when the viewer chats
   // or sends a file. Mirrors UltraViewer's "out of the way until needed"
@@ -586,8 +647,10 @@ export function enterHostMode(viewerId: string): void {
   hostPanelCollapsed = true;
 
   // Track this viewer so the panel can list multiple connected viewers.
-  const fmtId = formatViewerId(viewerId);
-  hostViewers.set(viewerId, { id: viewerId, name: fmtId });
+  // Prefer the machine name sent in connect-request; fall back to the
+  // formatted 9-digit id when the viewer didn't provide one.
+  const displayName = viewerName?.trim() || formatViewerId(viewerId);
+  hostViewers.set(viewerId, { id: viewerId, name: displayName });
 
   // Hide the regular titlebar and shrink the OS window into the mini-panel.
   document.body.classList.add('host-mode');
@@ -665,7 +728,7 @@ export function enterHostMode(viewerId: string): void {
 
   renderHostViewers();
   setupHostPanelEvents();
-  showToast(`${fmtId} đã kết nối vào máy của bạn`, 'info');
+  showToast(`${displayName} đã kết nối vào máy của bạn`, 'info');
 }
 
 /**

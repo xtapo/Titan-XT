@@ -46,6 +46,9 @@ export class ConnectionManager {
   private currentQuality: QualityPreset = DEFAULT_QUALITY;
   private role: 'host' | 'viewer' | null = null;
   private partnerId: string = '';
+  // Host-side: viewer's machine name captured from the incoming connect-request,
+  // so the host panel can display "PC-NAME" instead of just the digit ID.
+  private incomingViewerName: string = '';
 
   // === Auto-reconnect state (viewer-side only) ===
   // Cached so we can re-issue connect-request after a peer drop without
@@ -118,6 +121,7 @@ export class ConnectionManager {
       // Handle incoming connection request (we are the HOST)
       this.socket.on('connect-request', (data: any) => {
         console.log(`[Conn] Incoming connection from ${data.fromId}`);
+        this.incomingViewerName = data.fromName || '';
         // In auto-accept mode, respond to password challenge
       });
 
@@ -250,7 +254,7 @@ export class ConnectionManager {
     this.partnerId = viewerId;
 
     // Navigate to session page in host mode (shows chat + status panel)
-    enterHostMode(viewerId);
+    enterHostMode(viewerId, this.incomingViewerName);
 
     this.peer = new PeerConnection({
       onDataMessage: (channel, data) => {

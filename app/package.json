@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-app",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Titan-XT Remote Desktop App",
   "author": "xtapo",
   "main": "dist/main/index.js",
@@ -54,8 +54,7 @@
     "win": {
       "target": [
         "nsis",
-        "portable",
-        "zip"
+        "portable"
       ],
       "icon": "resources/icon.png",
       "requestedExecutionLevel": "requireAdministrator"
