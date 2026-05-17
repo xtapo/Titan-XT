@@ -8,7 +8,9 @@ import { MouseMessage, KeyMessage } from '../shared/protocol';
 
 let nutMouse: any = null;
 let nutKeyboard: any = null;
+let nutScreen: any = null;
 let nutLoaded = false;
+let cachedScreenSize: { width: number; height: number } | null = null;
 
 /**
  * Lazy-load nut.js (it's heavy and may fail on some systems)
@@ -19,6 +21,7 @@ async function loadNut(): Promise<boolean> {
     const nut = await import('@nut-tree-fork/nut-js');
     nutMouse = nut.mouse;
     nutKeyboard = nut.keyboard;
+    nutScreen = nut.screen;
 
     // Configure nut.js
     nutMouse.config.autoDelayMs = 0;
@@ -32,6 +35,33 @@ async function loadNut(): Promise<boolean> {
     console.error('[Input] Failed to load nut.js:', err);
     return false;
   }
+}
+
+/**
+ * Get host screen size in physical pixels.
+ * Electron's display.bounds is in DIPs (logical px), which on a HiDPI display
+ * is smaller than the physical screen — using it here would clip clicks on the
+ * right/bottom edges. nut.js reports physical px so we prefer that, with a
+ * fallback to bounds × scaleFactor.
+ */
+async function getScreenPixelSize(): Promise<{ width: number; height: number }> {
+  if (cachedScreenSize) return cachedScreenSize;
+  try {
+    const w = await nutScreen.width();
+    const h = await nutScreen.height();
+    if (w > 0 && h > 0) {
+      cachedScreenSize = { width: w, height: h };
+      return cachedScreenSize;
+    }
+  } catch {
+    // fall through
+  }
+  const d = screen.getPrimaryDisplay();
+  cachedScreenSize = {
+    width: Math.round(d.bounds.width * d.scaleFactor),
+    height: Math.round(d.bounds.height * d.scaleFactor),
+  };
+  return cachedScreenSize;
 }
 
 /**
@@ -79,13 +109,14 @@ function mapKey(key: string, code: string): number | null {
 async function handleMouse(msg: MouseMessage): Promise<void> {
   if (!nutLoaded) return;
 
-  // Get actual screen dimensions
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.bounds;
+  // Use physical pixel size from nut.js so clicks on the right/bottom edges
+  // are not clipped on HiDPI displays (Electron's display.bounds is logical px).
+  const { width, height } = await getScreenPixelSize();
 
-  // Convert ratio to actual coordinates
-  const x = Math.round(msg.x * width);
-  const y = Math.round(msg.y * height);
+  // Convert ratio to actual coordinates, clamped inside [0, max-1] to keep
+  // edge clicks targetable even when ratio rounds to exactly 1.0.
+  const x = Math.min(width - 1, Math.max(0, Math.round(msg.x * width)));
+  const y = Math.min(height - 1, Math.max(0, Math.round(msg.y * height)));
 
   try {
     switch (msg.action) {
