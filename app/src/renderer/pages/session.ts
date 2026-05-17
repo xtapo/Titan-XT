@@ -227,7 +227,6 @@ function setupSessionEvents() {
       window.connectionManager.connectToPartner(partnerId, password, mode).catch((err) => {
         console.error('[Session] Connection failed:', err);
         showToast('Kết nối thất bại', 'error');
-        const overlay = document.getElementById('video-overlay');
         const statusText = document.getElementById('session-status-text');
         if (statusText) statusText.textContent = 'Kết nối thất bại';
       });
@@ -309,6 +308,22 @@ function addFileToList(name: string, size: number, status: 'sending' | 'receivin
  * Handle disconnect
  */
 function handleDisconnect() {
+  // Tear down WebRTC peer + input handler so we don't leave a live session behind.
+  try {
+    window.connectionManager?.disconnect();
+  } catch (e) {
+    console.warn('[Session] disconnect error:', e);
+  }
+
+  // Detach remote video stream
+  const videoEl = document.getElementById('remote-video') as HTMLVideoElement | null;
+  if (videoEl) {
+    const stream = videoEl.srcObject as MediaStream | null;
+    stream?.getTracks().forEach((t) => t.stop());
+    videoEl.srcObject = null;
+  }
+  document.getElementById('video-overlay')?.classList.remove('hidden');
+
   navigateTo('home');
   showToast('Đã ngắt kết nối', 'info');
 }

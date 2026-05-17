@@ -269,6 +269,29 @@ function validateConnectForm() {
 }
 
 /**
+ * Reset the Connect button + form back to idle state.
+ * Called when navigating back to home (e.g. after disconnect or failed attempt).
+ */
+export function resetConnectForm() {
+  const btn = document.getElementById('btn-connect') as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+      </svg>
+      Kết nối
+    `;
+  }
+  const idInput = document.getElementById('partner-id') as HTMLInputElement | null;
+  const passInput = document.getElementById('partner-password') as HTMLInputElement | null;
+  if (idInput) idInput.value = '';
+  if (passInput) passInput.value = '';
+  validateConnectForm();
+  updateStatus('online');
+}
+
+/**
  * Handle connect button click
  */
 async function handleConnect() {

@@ -3,7 +3,7 @@
  * Bootstraps the app, renders pages, handles events
  */
 
-import { renderHomePage } from './pages/home';
+import { renderHomePage, resetConnectForm } from './pages/home';
 import { renderSessionPage } from './pages/session';
 import { showToast } from './components/toast';
 import { ConnectionManager } from './lib/connection';
@@ -25,6 +25,12 @@ export function navigateTo(page: 'home' | 'session') {
   document.querySelectorAll('.page').forEach((p) => p.classList.remove('active'));
   const target = document.getElementById(`page-${page}`);
   if (target) target.classList.add('active');
+
+  // When returning to home, reset the connect form so a stale "Đang kết nối..."
+  // button from a previous attempt doesn't persist.
+  if (page === 'home') {
+    resetConnectForm();
+  }
 }
 
 // === Initialize ===
