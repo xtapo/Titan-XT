@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
   identity: {
     get: () => ipcRenderer.invoke('identity:get'),
     regeneratePassword: () => ipcRenderer.invoke('identity:regeneratePassword'),
+    verifyPassword: (passwordHash: string, nonce: string) =>
+      ipcRenderer.invoke('identity:verifyPassword', passwordHash, nonce),
   },
 
   // === Screen ===
