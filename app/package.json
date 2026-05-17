@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Titan-XT Remote Desktop App",
   "main": "dist/main/index.js",
   "scripts": {
