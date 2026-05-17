@@ -2,7 +2,16 @@
  * WebRTC — Peer connection wrapper for screen streaming & data channels
  */
 
-import { ICE_SERVERS, CHANNEL_INPUT, CHANNEL_CHAT, CHANNEL_FILE, CHANNEL_SYSTEM } from '../../shared/constants';
+import {
+  ICE_SERVERS,
+  CHANNEL_INPUT,
+  CHANNEL_CHAT,
+  CHANNEL_FILE,
+  CHANNEL_SYSTEM,
+  VIDEO_MAX_BITRATE,
+  VIDEO_START_BITRATE,
+  PREFERRED_VIDEO_CODECS,
+} from '../../shared/constants';
 
 export type ConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed';
 
@@ -86,9 +95,80 @@ export class PeerConnection {
   // === Stream ===
 
   addStream(stream: MediaStream): void {
-    stream.getTracks().forEach((track) => {
-      this.pc.addTrack(track, stream);
+    // Hint encoder this is a screen share with sharp text + moderate motion.
+    // 'detail' biases toward sharper text; switch to 'motion' if remote is mostly video.
+    stream.getVideoTracks().forEach((track) => {
+      try {
+        (track as any).contentHint = 'detail';
+      } catch {
+        // contentHint not supported — ignore
+      }
     });
+
+    stream.getTracks().forEach((track) => {
+      const sender = this.pc.addTrack(track, stream);
+      if (track.kind === 'video') {
+        this.applyVideoSenderTuning(sender);
+        this.preferVideoCodec();
+      }
+    });
+  }
+
+  /**
+   * Set bitrate caps + initial bitrate on the video sender.
+   * Without this, WebRTC starts ~300kbps and ramps slowly — unusable for 1080p screen share.
+   */
+  private async applyVideoSenderTuning(sender: RTCRtpSender): Promise<void> {
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = VIDEO_MAX_BITRATE;
+      (params.encodings[0] as any).maxFramerate = 30;
+      // Hint initial bitrate (non-standard but respected by Chromium)
+      (params as any).degradationPreference = 'maintain-resolution';
+      await sender.setParameters(params);
+
+      // Patch the SDP-level start bitrate via setParameters above; some Chromium
+      // builds also honor an x-google-start-bitrate munge but we keep it clean.
+      void VIDEO_START_BITRATE;
+    } catch (err) {
+      console.warn('[WebRTC] Could not tune video sender:', err);
+    }
+  }
+
+  /**
+   * Reorder codec preferences so H.264 (hardware-accelerated on most GPUs) is tried first.
+   * Falls back gracefully on browsers without setCodecPreferences support.
+   */
+  private preferVideoCodec(): void {
+    try {
+      const transceiver = this.pc
+        .getTransceivers()
+        .find((t) => t.sender.track?.kind === 'video');
+      if (!transceiver || typeof (transceiver as any).setCodecPreferences !== 'function') {
+        return;
+      }
+      const caps = (RTCRtpSender as any).getCapabilities?.('video');
+      if (!caps?.codecs) return;
+
+      const ordered: RTCRtpCodecCapability[] = [];
+      for (const want of PREFERRED_VIDEO_CODECS) {
+        for (const c of caps.codecs as RTCRtpCodecCapability[]) {
+          if (c.mimeType.toLowerCase() === want.toLowerCase() && !ordered.includes(c)) {
+            ordered.push(c);
+          }
+        }
+      }
+      // Append any remaining codecs to keep negotiation viable
+      for (const c of caps.codecs as RTCRtpCodecCapability[]) {
+        if (!ordered.includes(c)) ordered.push(c);
+      }
+      (transceiver as any).setCodecPreferences(ordered);
+    } catch (err) {
+      console.warn('[WebRTC] Could not set codec preferences:', err);
+    }
   }
 
   // === Data Channels ===

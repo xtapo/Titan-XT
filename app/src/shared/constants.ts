@@ -20,6 +20,11 @@ export const DEFAULT_FPS = 30;
 export const DEFAULT_MAX_WIDTH = 1920;
 export const DEFAULT_MAX_HEIGHT = 1080;
 
+// Video encoder
+export const VIDEO_MAX_BITRATE = 6_000_000; // 6 Mbps — good for 1080p screen share
+export const VIDEO_START_BITRATE = 2_500_000;
+export const PREFERRED_VIDEO_CODECS = ['video/H264', 'video/VP9', 'video/VP8'];
+
 // Data channel names
 export const CHANNEL_INPUT = 'input';
 export const CHANNEL_CHAT = 'chat';
