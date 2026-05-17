@@ -34,6 +34,13 @@ export class PeerConnection {
 
     this.pc.ontrack = (e) => {
       if (e.streams[0]) {
+        // Lower jitter buffer target for screen sharing — default is too high (~200ms+).
+        // 50ms gives noticeably snappier feel; the receiver will adapt up if network is bad.
+        try {
+          if (e.receiver && 'jitterBufferTarget' in e.receiver) {
+            (e.receiver as any).jitterBufferTarget = 50;
+          }
+        } catch {}
         this.callbacks.onRemoteStream?.(e.streams[0]);
       }
     };
@@ -87,8 +94,51 @@ export class PeerConnection {
 
   addStream(stream: MediaStream): void {
     stream.getTracks().forEach((track) => {
-      this.pc.addTrack(track, stream);
+      if (track.kind === 'video') {
+        // Hint encoder this is screen/motion content (favors detail over smoothness when needed,
+        // but combined with high bitrate gives smoother result for desktop streaming).
+        try { (track as any).contentHint = 'motion'; } catch {}
+      }
+      const sender = this.pc.addTrack(track, stream);
+      if (track.kind === 'video') {
+        this.tuneVideoSender(sender);
+      }
     });
+  }
+
+  private async tuneVideoSender(sender: RTCRtpSender): Promise<void> {
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      // 8 Mbps target — desktop streaming needs much more than the WebRTC default (~2.5 Mbps)
+      // to look sharp at 1080p30. Lower automatically if bandwidth-limited (BWE handles this).
+      params.encodings[0].maxBitrate = 8_000_000;
+      params.encodings[0].maxFramerate = 30;
+      // Prioritize low latency over best quality
+      (params as any).degradationPreference = 'maintain-framerate';
+      await sender.setParameters(params);
+    } catch (err) {
+      console.warn('[WebRTC] tuneVideoSender failed:', err);
+    }
+
+    // Prefer H.264 if available — hardware-accelerated on most platforms, lower CPU/latency
+    try {
+      const transceiver = this.pc.getTransceivers().find((t) => t.sender === sender);
+      if (transceiver && (RTCRtpSender as any).getCapabilities) {
+        const caps = (RTCRtpSender as any).getCapabilities('video');
+        if (caps?.codecs) {
+          const preferred = [
+            ...caps.codecs.filter((c: any) => /h264/i.test(c.mimeType)),
+            ...caps.codecs.filter((c: any) => !/h264/i.test(c.mimeType)),
+          ];
+          (transceiver as any).setCodecPreferences?.(preferred);
+        }
+      }
+    } catch (err) {
+      console.warn('[WebRTC] codec preference failed:', err);
+    }
   }
 
   // === Data Channels ===
