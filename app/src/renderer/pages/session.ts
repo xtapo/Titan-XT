@@ -454,6 +454,13 @@ function runRemoteAction(action: string): void {
     if (!ok) return;
   }
 
+  // Tell the connection manager we're about to break the session on purpose
+  // so its auto-reconnect loop knows to wait longer and shows the right copy
+  // ("đang chờ máy đối tác khởi động lại..." instead of "mất kết nối").
+  if (destructive) {
+    window.connectionManager?.markExpectedDisconnect(action);
+  }
+
   const sent = window.connectionManager?.sendRemoteAction(action);
   if (sent === false) {
     showToast('Chưa kết nối — không thể gửi lệnh', 'error');
@@ -563,7 +570,10 @@ function escapeHtml(s: string): string {
  */
 export function enterHostMode(viewerId: string): void {
   isHostMode = true;
-  hostPanelCollapsed = false;
+  // Start collapsed by default — only auto-expand when the viewer chats
+  // or sends a file. Mirrors UltraViewer's "out of the way until needed"
+  // behavior so the host's screen isn't covered.
+  hostPanelCollapsed = true;
 
   // Track this viewer so the panel can list multiple connected viewers.
   const fmtId = formatViewerId(viewerId);
@@ -571,7 +581,15 @@ export function enterHostMode(viewerId: string): void {
 
   // Hide the regular titlebar and shrink the OS window into the mini-panel.
   document.body.classList.add('host-mode');
+  // Apply the default collapsed state to the body so the CSS picks it up
+  // before the panel mounts (avoids a flash of expanded layout).
+  document.body.classList.toggle('host-mode-collapsed', hostPanelCollapsed);
   window.titanAPI?.window?.setHostMode?.(true);
+  // Make sure the OS window matches the collapsed default the renderer just
+  // applied. setHostMode initially sizes to the expanded panel, so resize.
+  if (hostPanelCollapsed) {
+    window.titanAPI?.window?.setHostCollapsed?.(true);
+  }
 
   // Navigate to session page so its container is visible.
   navigateTo('session');
@@ -866,6 +884,51 @@ export function updateFileProgress(
     const sizePrefix = original.split('—')[0]?.trim() || '';
     sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
   }
+}
+
+/**
+ * Show / update the reconnecting overlay on the session page. Called by
+ * ConnectionManager when the viewer peer drops and we begin auto-retry.
+ *
+ * @param partnerId   the host id to display in the toolbar
+ * @param attempt     1-based attempt index (0 = before first retry fires)
+ * @param max         total attempts the manager will try
+ * @param hostReboot  true if a destructive action is in flight (signout/restart/shutdown)
+ */
+export function showReconnectingState(
+  partnerId: string,
+  attempt: number,
+  max: number,
+  hostReboot: boolean,
+): void {
+  const overlay = document.getElementById('video-overlay');
+  const text = document.getElementById('session-status-text');
+  const partnerName = document.getElementById('toolbar-partner-name');
+
+  if (overlay) overlay.classList.remove('hidden');
+  if (text) {
+    if (attempt <= 0) {
+      text.textContent = hostReboot
+        ? 'Đang chờ máy đối tác khởi động lại...'
+        : 'Mất kết nối — đang thử kết nối lại...';
+    } else {
+      text.textContent = `Đang kết nối lại... (${attempt}/${max})`;
+    }
+  }
+  if (partnerName && partnerId && partnerId.length >= 9) {
+    const fmtId = `${partnerId.substring(0, 3)} ${partnerId.substring(3, 6)} ${partnerId.substring(6, 9)}`;
+    partnerName.textContent = `Đang kết nối lại đến ${fmtId}...`;
+  }
+}
+
+/**
+ * Hide the reconnecting overlay (restored either on success or give-up).
+ */
+export function hideReconnectingState(): void {
+  const overlay = document.getElementById('video-overlay');
+  const text = document.getElementById('session-status-text');
+  if (overlay) overlay.classList.add('hidden');
+  if (text) text.textContent = 'Đang kết nối...';
 }
 
 /**

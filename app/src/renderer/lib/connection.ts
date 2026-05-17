@@ -5,7 +5,15 @@
 import { io, Socket } from 'socket.io-client';
 import { PeerConnection } from './webrtc';
 import { InputHandler } from './input-handler';
-import { addChatMessage, enterHostMode, exitHostMode, addFileEntry, updateFileProgress } from '../pages/session';
+import {
+  addChatMessage,
+  enterHostMode,
+  exitHostMode,
+  addFileEntry,
+  updateFileProgress,
+  showReconnectingState,
+  hideReconnectingState,
+} from '../pages/session';
 import { showToast } from '../components/toast';
 import {
   CHANNEL_INPUT,
@@ -34,6 +42,25 @@ export class ConnectionManager {
   private currentQuality: QualityPreset = DEFAULT_QUALITY;
   private role: 'host' | 'viewer' | null = null;
   private partnerId: string = '';
+
+  // === Auto-reconnect state (viewer-side only) ===
+  // Cached so we can re-issue connect-request after a peer drop without
+  // forcing the user back to home to retype the password.
+  private viewerCredentials: { partnerId: string; password: string; mode: string } | null = null;
+  // True while the auto-retry loop is running. Prevents handleViewerConnectFailure
+  // from yanking the user back to home — we want to stay on the session UI.
+  private reconnecting: boolean = false;
+  private reconnectAttempt: number = 0;
+  // Total retries before giving up. Higher when we know the host is rebooting.
+  private reconnectMax: number = 6;
+  private reconnectTimer: number | null = null;
+  // Set when the user fires a destructive remote action (signout/restart/shutdown).
+  // Tells the reconnect loop the disconnect is expected and to be patient
+  // (longer initial wait + bigger budget while the OS comes back up).
+  private expectedDisconnectKind: 'signout' | 'restart' | 'shutdown' | null = null;
+  // True once disconnect()/disconnectAll() ran from a user-initiated path.
+  // Suppresses auto-reconnect on the closure cascade that follows.
+  private intentionalClose: boolean = false;
   // File transfer: incoming chunks are buffered until 'complete' arrives.
   private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number }> = new Map();
 
@@ -122,6 +149,11 @@ export class ConnectionManager {
       return;
     }
 
+    // Cache credentials so the auto-reconnect loop can re-issue the same
+    // connect-request without dragging the user back to home.
+    this.viewerCredentials = { partnerId, password, mode };
+    this.intentionalClose = false;
+
     // Setup peer + ICE forwarding BEFORE sending connect-request so that
     // host's offer/ICE candidates (which arrive immediately after the host
     // accepts) have a peer to land on. Without this, Chromium drops them
@@ -154,11 +186,24 @@ export class ConnectionManager {
     });
 
     this.socket.once('connect-rejected', () => {
+      // Wrong password is not a transient failure — stop any retry loop and
+      // bounce the user back so they can retype.
+      this.cancelReconnect();
+      this.viewerCredentials = null;
       showToast('Mật khẩu không đúng', 'error');
       this.handleViewerConnectFailure();
     });
 
     this.socket.once('connect-error', (data: any) => {
+      // Server-reported errors (e.g. partner offline). On a normal first
+      // connect this is fatal; during auto-reconnect we let the loop retry
+      // because the host may simply be mid-reboot.
+      if (this.reconnecting) {
+        console.log('[Conn] connect-error during reconnect — will retry:', data?.error);
+        return;
+      }
+      this.cancelReconnect();
+      this.viewerCredentials = null;
       showToast(data.error || 'Lỗi kết nối', 'error');
       this.handleViewerConnectFailure();
     });
@@ -277,7 +322,19 @@ export class ConnectionManager {
       onStateChange: (state) => {
         console.log('[Conn] Viewer peer state:', state);
         if (state === 'connected') {
-          showToast('Kết nối thành công!', 'success');
+          // First success or recovery — clear any retry state and let the user know.
+          if (this.reconnecting) {
+            this.cancelReconnect();
+            hideReconnectingState();
+            showToast('Đã kết nối lại', 'success');
+          } else {
+            showToast('Kết nối thành công!', 'success');
+          }
+        } else if (state === 'disconnected' || state === 'failed') {
+          // Don't retry if the user (or a fatal error) intentionally tore it down.
+          if (this.intentionalClose) return;
+          if (!this.viewerCredentials) return;
+          this.scheduleReconnect();
         }
       },
       onStatsUpdate: (stats) => {
@@ -696,6 +753,9 @@ export class ConnectionManager {
   // === Disconnect ===
 
   disconnect(): void {
+    this.intentionalClose = true;
+    this.cancelReconnect();
+    this.viewerCredentials = null;
     this.inputHandler?.disable();
     this.peer?.close();
     this.peer = null;
@@ -716,5 +776,144 @@ export class ConnectionManager {
 
   get isConnectedToServer(): boolean {
     return this.socket?.connected ?? false;
+  }
+
+  // === Auto-reconnect (viewer-side) ===
+
+  /**
+   * Public hook called by the session UI right before the user fires a
+   * destructive remote action. Lets the reconnect loop be patient (longer
+   * initial wait + bigger budget) because the host OS is about to restart.
+   *
+   * Pure host-controlling actions (lock, ctrl-alt-del, task-manager) don't
+   * tear down the WebRTC peer, so we ignore them here.
+   */
+  markExpectedDisconnect(action: string): void {
+    if (action === 'signout' || action === 'restart' || action === 'shutdown') {
+      this.expectedDisconnectKind = action;
+    }
+  }
+
+  /**
+   * Kick off the auto-retry loop. Triggered when the viewer's peer hits
+   * 'disconnected' or 'failed' state without an intentional teardown.
+   * Backoff steps up gradually so we don't spam the signal server, with a
+   * larger budget when the host is rebooting.
+   */
+  private scheduleReconnect(): void {
+    if (!this.viewerCredentials || this.intentionalClose) return;
+    if (this.reconnecting) return;
+
+    this.reconnecting = true;
+    this.reconnectAttempt = 0;
+    this.reconnectMax = this.expectedDisconnectKind ? 20 : 8;
+
+    showReconnectingState(
+      this.viewerCredentials.partnerId,
+      0,
+      this.reconnectMax,
+      !!this.expectedDisconnectKind,
+    );
+
+    // First retry slightly delayed so the host has time to die / start coming back.
+    // Restart/shutdown need much longer — give the OS ~10s before the first probe.
+    const initialDelay = this.expectedDisconnectKind === 'restart'
+      ? 10_000
+      : this.expectedDisconnectKind === 'shutdown'
+      ? 8_000
+      : this.expectedDisconnectKind === 'signout'
+      ? 5_000
+      : 1_500;
+
+    this.reconnectTimer = window.setTimeout(() => this.attemptReconnect(), initialDelay);
+  }
+
+  private attemptReconnect(): void {
+    if (!this.reconnecting || !this.viewerCredentials) return;
+
+    this.reconnectAttempt += 1;
+    const { partnerId, password, mode } = this.viewerCredentials;
+
+    showReconnectingState(partnerId, this.reconnectAttempt, this.reconnectMax, !!this.expectedDisconnectKind);
+    console.log(`[Conn] Reconnect attempt ${this.reconnectAttempt}/${this.reconnectMax} to ${partnerId}`);
+
+    // Tear down any half-built peer from the previous attempt before retrying.
+    // Without this, a stale RTCPeerConnection in 'failed' state piggybacks on
+    // the next setupAsViewer call and the reconnect never completes.
+    this.inputHandler?.disable();
+    this.peer?.close();
+    this.peer = null;
+    this.inputHandler = null;
+
+    // Make sure the signal server is still there — if we also lost the
+    // socket we need it back before connect-request can land.
+    if (!this.socket?.connected) {
+      console.log('[Conn] Signal socket down — waiting before next attempt');
+      this.scheduleNextAttempt();
+      return;
+    }
+
+    // Re-issue the original connect-request flow. connectToPartner() resets
+    // intentionalClose=false and the listeners it installs are .once() so
+    // they self-clean.
+    this.connectToPartner(partnerId, password, mode).catch((err) => {
+      console.warn('[Conn] reconnect attempt threw:', err);
+    });
+
+    // Schedule a watchdog: if peer doesn't reach 'connected' within a window,
+    // assume this attempt failed and queue the next one. onStateChange will
+    // cancel this if we succeed.
+    this.scheduleNextAttempt();
+  }
+
+  /**
+   * Schedule the next retry. Backoff: 3s, 5s, 8s, then 10s thereafter.
+   * Cleared by cancelReconnect() on success or user disconnect.
+   */
+  private scheduleNextAttempt(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (this.reconnectAttempt >= this.reconnectMax) {
+      this.giveUpReconnect();
+      return;
+    }
+
+    const backoffSteps = [3_000, 5_000, 8_000, 10_000];
+    const delay = backoffSteps[Math.min(this.reconnectAttempt, backoffSteps.length - 1)];
+    this.reconnectTimer = window.setTimeout(() => {
+      // If we're already connected by the time this fires, the state-change
+      // handler will have called cancelReconnect; this is just the fallback.
+      if (this.peer && (this.peer as any).connectionState === 'connected') return;
+      this.attemptReconnect();
+    }, delay);
+  }
+
+  /**
+   * Stop any pending retry timer and reset retry bookkeeping.
+   * Safe to call multiple times.
+   */
+  private cancelReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnecting = false;
+    this.reconnectAttempt = 0;
+    this.expectedDisconnectKind = null;
+  }
+
+  /**
+   * Out of attempts — clear state, surface a toast, drop the user back to home.
+   */
+  private giveUpReconnect(): void {
+    console.log('[Conn] Giving up reconnect after', this.reconnectAttempt, 'attempts');
+    this.cancelReconnect();
+    this.viewerCredentials = null;
+    hideReconnectingState();
+    showToast('Không thể kết nối lại — đã hết số lần thử', 'error');
+    this.handleViewerConnectFailure();
   }
 }
