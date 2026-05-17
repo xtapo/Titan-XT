@@ -1,10 +1,13 @@
 # Build Titan-XT installer + auto-publish to GitHub Releases.
 #
 # Trigger: push a version tag like v1.0.0. The job syncs app/package.json
-# `version` with the tag, builds the installer per OS, and lets
-# electron-builder publish to a GitHub Release of that tag (it auto-creates
-# the release as a draft on the first matrix runner and then uploads to
-# the same release from the others).
+# `version` with the tag, builds the Windows installer, and lets
+# electron-builder publish to a GitHub Release of that tag.
+#
+# Mac/Linux: not built here. Mac requires a code-signing cert (otherwise
+# the .app is "damaged" warning); Linux rpm/snap targets need extra system
+# packages on the runner. Add them back when those secrets / targets are
+# actually needed.
 
 name: Release
 
@@ -18,13 +21,8 @@ permissions:
   contents: write   # required to create releases + upload assets
 
 jobs:
-  release:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+  windows:
+    runs-on: windows-latest
 
     defaults:
       run:
@@ -54,22 +52,6 @@ jobs:
       - run: npm ci
 
       - name: Build + publish (Windows)
-        if: matrix.os == 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:win
-
-      - name: Build + publish (macOS)
-        if: matrix.os == 'macos-latest'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional code-signing — skip silently if secrets not set.
-          CSC_LINK: ${{ secrets.MAC_CERT }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-        run: npm run build && npx electron-builder --mac --publish always
-
-      - name: Build + publish (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run build && npx electron-builder --linux --publish always

@@ -46,11 +46,12 @@ export class InputHandler {
     if (this.enabled) return;
     this.enabled = true;
 
-    // Show the OS cursor over the video so the viewer always sees their own
-    // pointer. We don't draw a synthetic local cursor — Electron's
-    // desktopCapturer always captures the host's real cursor into the video
-    // stream, so adding an overlay would render two cursors at once.
-    this.videoEl.style.cursor = 'default';
+    // Hide the viewer's local OS cursor over the video. Electron's
+    // desktopCapturer always bakes the host's real cursor into the video
+    // stream, so if we left the local cursor visible the viewer would see
+    // two pointers overlapping (their own + the captured host one).
+    // Same approach as TeamViewer/AnyDesk/Parsec — show only the remote cursor.
+    this.videoEl.style.cursor = 'none';
     this.videoEl.tabIndex = 0;
     this.videoEl.focus();
 
