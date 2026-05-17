@@ -8,6 +8,7 @@ import { QUALITY_PROFILES, QualityPreset, DEFAULT_QUALITY } from '../../shared/c
 
 type DisplayFit = 'contain' | 'cover' | 'fill';
 let currentFit: DisplayFit = 'contain';
+let isHostMode = false;
 
 /**
  * Render session page structure
@@ -381,14 +382,93 @@ export function addChatMessage(text: string, type: 'sent' | 'received') {
   if (type === 'received') {
     const panel = document.getElementById('chat-panel');
     if (panel?.classList.contains('hidden')) {
-      const badge = document.getElementById('chat-badge');
-      if (badge) {
-        const count = parseInt(badge.textContent || '0') + 1;
-        badge.textContent = count.toString();
-        badge.classList.remove('hidden');
+      // On host mode, auto-open chat panel for incoming messages
+      if (isHostMode) {
+        panel.classList.remove('hidden');
+        document.getElementById('btn-chat')?.classList.add('active');
+      } else {
+        const badge = document.getElementById('chat-badge');
+        if (badge) {
+          const count = parseInt(badge.textContent || '0') + 1;
+          badge.textContent = count.toString();
+          badge.classList.remove('hidden');
+        }
       }
     }
   }
+}
+
+/**
+ * Enter host mode — called when this machine is being controlled.
+ * Navigates to session page and adapts UI for host role:
+ *   - Hides video area, shows "being controlled" status
+ *   - Hides viewer-only buttons (monitor, fullscreen, quality, fit)
+ *   - Keeps chat + file transfer + disconnect available
+ */
+export function enterHostMode(viewerId: string): void {
+  isHostMode = true;
+
+  // Navigate to session page
+  navigateTo('session');
+
+  // Format viewer ID
+  const fmtId = viewerId.length >= 9
+    ? `${viewerId.substring(0, 3)} ${viewerId.substring(3, 6)} ${viewerId.substring(6, 9)}`
+    : viewerId;
+
+  // Update toolbar partner name
+  const partnerName = document.getElementById('toolbar-partner-name');
+  if (partnerName) {
+    partnerName.textContent = `Đang được điều khiển bởi ${fmtId}`;
+  }
+
+  // Replace video area with host status panel
+  const videoWrapper = document.getElementById('video-wrapper');
+  if (videoWrapper) {
+    videoWrapper.innerHTML = `
+      <div class="host-status-panel">
+        <div class="host-status-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8M12 17v4"/>
+            <circle cx="12" cy="10" r="3" fill="currentColor" opacity="0.3"/>
+          </svg>
+        </div>
+        <h2 class="host-status-title">Đang được điều khiển</h2>
+        <p class="host-status-desc">Kỹ thuật viên <strong>${fmtId}</strong> đang xem màn hình của bạn</p>
+        <div class="host-status-indicator">
+          <span class="host-pulse"></span>
+          <span>Phiên đang hoạt động</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // Hide viewer-only toolbar buttons
+  const viewerOnlyBtns = [
+    'btn-monitor-select',
+    'btn-fullscreen',
+    'quality-dropdown',
+    'fit-dropdown',
+  ];
+  viewerOnlyBtns.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+
+  // Hide stats (latency/fps/bitrate are viewer-side metrics)
+  const stats = document.getElementById('toolbar-stats');
+  if (stats) stats.style.display = 'none';
+
+  showToast(`${fmtId} đã kết nối vào máy của bạn`, 'info');
+}
+
+/**
+ * Exit host mode — restore session page to default state.
+ * Called when the session ends on the host side.
+ */
+export function exitHostMode(): void {
+  isHostMode = false;
 }
 
 /**

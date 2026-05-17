@@ -5,7 +5,7 @@
 import { io, Socket } from 'socket.io-client';
 import { PeerConnection } from './webrtc';
 import { InputHandler } from './input-handler';
-import { addChatMessage } from '../pages/session';
+import { addChatMessage, enterHostMode, exitHostMode } from '../pages/session';
 import { showToast } from '../components/toast';
 import {
   CHANNEL_INPUT,
@@ -152,6 +152,9 @@ export class ConnectionManager {
     console.log('[Conn] Setting up as HOST');
     this.role = 'host';
     this.partnerId = viewerId;
+
+    // Navigate to session page in host mode (shows chat + status panel)
+    enterHostMode(viewerId);
 
     this.peer = new PeerConnection({
       onDataMessage: (channel, data) => {
@@ -454,6 +457,9 @@ export class ConnectionManager {
     this.peer?.close();
     this.peer = null;
     this.inputHandler = null;
+    if (this.role === 'host') {
+      exitHostMode();
+    }
     this.role = null;
     this.partnerId = '';
   }
