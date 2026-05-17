@@ -118,10 +118,24 @@ async function handleMouse(msg: MouseMessage): Promise<void> {
   const x = Math.min(width - 1, Math.max(0, Math.round(msg.x * width)));
   const y = Math.min(height - 1, Math.max(0, Math.round(msg.y * height)));
 
+  // Map our protocol button → nut.js Button enum value.
+  // nut.js Button: LEFT=0, MIDDLE=1, RIGHT=2.
+  const btnIndex = msg.button === 'right' ? 2 : msg.button === 'middle' ? 1 : 0;
+
   try {
     switch (msg.action) {
       case 'move':
         await nutMouse.setPosition({ x, y });
+        break;
+
+      case 'down':
+        await nutMouse.setPosition({ x, y });
+        await nutMouse.pressButton(btnIndex);
+        break;
+
+      case 'up':
+        await nutMouse.setPosition({ x, y });
+        await nutMouse.releaseButton(btnIndex);
         break;
 
       case 'click':
@@ -129,8 +143,7 @@ async function handleMouse(msg: MouseMessage): Promise<void> {
         if (msg.button === 'right') {
           await nutMouse.rightClick();
         } else if (msg.button === 'middle') {
-          // Middle click - nut.js may not support directly
-          await nutMouse.click(1); // Button.MIDDLE
+          await nutMouse.click(1);
         } else {
           await nutMouse.leftClick();
         }
@@ -148,8 +161,8 @@ async function handleMouse(msg: MouseMessage): Promise<void> {
 
       case 'scroll':
         if (msg.deltaY) {
-          await nutMouse.scrollDown(msg.deltaY > 0 ? Math.abs(msg.deltaY) : 0);
-          await nutMouse.scrollUp(msg.deltaY < 0 ? Math.abs(msg.deltaY) : 0);
+          if (msg.deltaY > 0) await nutMouse.scrollDown(Math.abs(msg.deltaY));
+          else await nutMouse.scrollUp(Math.abs(msg.deltaY));
         }
         break;
     }

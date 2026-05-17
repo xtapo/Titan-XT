@@ -29,6 +29,11 @@ export class PeerConnection {
   private dataChannels: Map<string, RTCDataChannel> = new Map();
   private callbacks: PeerCallbacks;
   private statsInterval: number | null = null;
+  // Buffer ICE candidates that arrive before setRemoteDescription completes.
+  // Calling addIceCandidate before remote description is set throws
+  // InvalidStateError on Chromium, which silently kills the connection.
+  private pendingIceCandidates: RTCIceCandidateInit[] = [];
+  private remoteDescriptionSet: boolean = false;
 
   constructor(callbacks: PeerCallbacks) {
     this.callbacks = callbacks;
@@ -81,6 +86,8 @@ export class PeerConnection {
 
   async handleOffer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
     await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
+    this.remoteDescriptionSet = true;
+    await this.flushPendingIce();
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);
     return answer;
@@ -88,10 +95,34 @@ export class PeerConnection {
 
   async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
     await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
+    this.remoteDescriptionSet = true;
+    await this.flushPendingIce();
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    if (!this.remoteDescriptionSet) {
+      // Queue until remote description is set; otherwise Chromium throws
+      // InvalidStateError and the candidate is lost.
+      this.pendingIceCandidates.push(candidate);
+      return;
+    }
+    try {
+      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (err) {
+      console.warn('[WebRTC] addIceCandidate failed:', err);
+    }
+  }
+
+  private async flushPendingIce(): Promise<void> {
+    if (this.pendingIceCandidates.length === 0) return;
+    const queued = this.pendingIceCandidates.splice(0);
+    for (const c of queued) {
+      try {
+        await this.pc.addIceCandidate(new RTCIceCandidate(c));
+      } catch (err) {
+        console.warn('[WebRTC] flush addIceCandidate failed:', err);
+      }
+    }
   }
 
   // === Stream ===

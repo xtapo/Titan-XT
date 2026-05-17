@@ -3,7 +3,7 @@
 // --- Mouse Events ---
 export interface MouseMessage {
   type: 'mouse';
-  action: 'move' | 'click' | 'dblclick' | 'contextmenu' | 'scroll';
+  action: 'move' | 'down' | 'up' | 'click' | 'dblclick' | 'contextmenu' | 'scroll';
   /** X coordinate as ratio 0-1 of screen width */
   x: number;
   /** Y coordinate as ratio 0-1 of screen height */

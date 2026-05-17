@@ -26,9 +26,9 @@ contextBridge.exposeInMainWorld('titanAPI', {
 
   // === Screen ===
   screen: {
-    getMonitors: () => ipcRenderer.invoke('screen:getMonitors'),
-    // Note: actual screen capture uses desktopCapturer in renderer via
-    // navigator.mediaDevices.getUserMedia with chromeMediaSource
+    getSources: () => ipcRenderer.invoke('screen:getSources'),
+    getMonitorInfo: (monitorId: string) => ipcRenderer.invoke('screen:getMonitorInfo', monitorId),
+    getPrimaryDisplay: () => ipcRenderer.invoke('screen:getPrimaryDisplay'),
   },
 
   // === Input Simulation ===
@@ -45,8 +45,11 @@ contextBridge.exposeInMainWorld('titanAPI', {
   // === File ===
   file: {
     selectFiles: () => ipcRenderer.invoke('file:selectFiles'),
-    saveFile: (fileName: string, data: ArrayBuffer) =>
-      ipcRenderer.invoke('file:saveFile', fileName, data),
+    readChunk: (filePath: string, offset: number, chunkSize: number) =>
+      ipcRenderer.invoke('file:readChunk', filePath, offset, chunkSize) as Promise<string | null>,
+    saveFile: (fileName: string, base64Data: string) =>
+      ipcRenderer.invoke('file:saveFile', fileName, base64Data),
+    showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
   },
 
   // === History ===

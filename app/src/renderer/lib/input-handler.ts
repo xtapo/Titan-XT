@@ -150,14 +150,19 @@ export class InputHandler {
   private onMouseDown = (e: MouseEvent) => {
     const { x, y } = this.getRelativeCoords(e);
     const msg: MouseMessage = {
-      type: 'mouse', action: 'click', x, y,
+      type: 'mouse', action: 'down', x, y,
       button: this.getButton(e),
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
-  private onMouseUp = (_e: MouseEvent) => {
-    // Could send mouse-up for drag support
+  private onMouseUp = (e: MouseEvent) => {
+    const { x, y } = this.getRelativeCoords(e);
+    const msg: MouseMessage = {
+      type: 'mouse', action: 'up', x, y,
+      button: this.getButton(e),
+    };
+    this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onDblClick = (e: MouseEvent) => {

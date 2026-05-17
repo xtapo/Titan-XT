@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, clipboard } from 'electron';
 import path from 'path';
 import os from 'os';
 import { APP_NAME } from '../shared/constants';
@@ -28,7 +28,6 @@ function createMainWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: false, // Allow screen capture
     },
     show: false,
   });

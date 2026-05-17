@@ -5,17 +5,23 @@
 import { io, Socket } from 'socket.io-client';
 import { PeerConnection } from './webrtc';
 import { InputHandler } from './input-handler';
-import { addChatMessage, enterHostMode, exitHostMode } from '../pages/session';
+import { addChatMessage, enterHostMode, exitHostMode, addFileEntry, updateFileProgress } from '../pages/session';
 import { showToast } from '../components/toast';
 import {
   CHANNEL_INPUT,
   CHANNEL_CHAT,
+  CHANNEL_FILE,
   CHANNEL_SYSTEM,
   DEFAULT_SIGNAL_SERVER,
   HEARTBEAT_INTERVAL,
   DEFAULT_QUALITY,
   QualityPreset,
 } from '../../shared/constants';
+import {
+  FileMessage,
+  FileOfferMessage,
+  FileChunkMessage,
+} from '../../shared/protocol';
 
 export class ConnectionManager {
   private socket: Socket | null = null;
@@ -28,6 +34,8 @@ export class ConnectionManager {
   private currentQuality: QualityPreset = DEFAULT_QUALITY;
   private role: 'host' | 'viewer' | null = null;
   private partnerId: string = '';
+  // File transfer: incoming chunks are buffered until 'complete' arrives.
+  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number }> = new Map();
 
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
@@ -92,9 +100,11 @@ export class ConnectionManager {
       });
 
       // Handle session ended by other party
-      this.socket.on('session-ended', (data: any) => {
+      this.socket.on('session-ended', (_data: any) => {
         this.disconnect();
         showToast('Phiên kết nối đã kết thúc', 'info');
+        // Surface the home screen so the user isn't stuck on a dead session UI.
+        import('../main').then(({ navigateTo }) => navigateTo('home'));
       });
 
       this.socket.on('disconnect', () => {
@@ -111,6 +121,12 @@ export class ConnectionManager {
       showToast('Chưa kết nối server', 'error');
       return;
     }
+
+    // Setup peer + ICE forwarding BEFORE sending connect-request so that
+    // host's offer/ICE candidates (which arrive immediately after the host
+    // accepts) have a peer to land on. Without this, Chromium drops them
+    // and the viewer ends up with a black screen.
+    this.setupAsViewer(partnerId, mode);
 
     // Send connection request
     this.socket.emit('connect-request', {
@@ -134,16 +150,35 @@ export class ConnectionManager {
     // Wait for acceptance
     this.socket.once('connect-accepted', (data: any) => {
       console.log('[Conn] Connection accepted! Session:', data.sessionId);
-      this.setupAsViewer(partnerId, mode);
+      // Peer is already configured; nothing more to do here.
     });
 
     this.socket.once('connect-rejected', () => {
       showToast('Mật khẩu không đúng', 'error');
+      this.handleViewerConnectFailure();
     });
 
     this.socket.once('connect-error', (data: any) => {
       showToast(data.error || 'Lỗi kết nối', 'error');
+      this.handleViewerConnectFailure();
     });
+  }
+
+  /**
+   * Tear down a half-built viewer peer when the host rejects the password
+   * or the server reports an error. Without this, a stale PeerConnection
+   * + InputHandler stays alive across attempts and pollutes the next one.
+   */
+  private handleViewerConnectFailure(): void {
+    this.inputHandler?.disable();
+    this.peer?.close();
+    this.peer = null;
+    this.inputHandler = null;
+    this.role = null;
+    this.partnerId = '';
+    // Re-import lazily to avoid a circular dep at module-load time.
+    import('../pages/home').then(({ resetConnectForm }) => resetConnectForm());
+    import('../main').then(({ navigateTo }) => navigateTo('home'));
   }
 
   // === Setup as HOST (being controlled) ===
@@ -163,6 +198,8 @@ export class ConnectionManager {
           window.titanAPI?.input?.simulate(data);
         } else if (channel === CHANNEL_CHAT) {
           addChatMessage(data.text, 'received');
+        } else if (channel === CHANNEL_FILE) {
+          this.handleFileMessage(data);
         } else if (channel === CHANNEL_SYSTEM) {
           this.handleSystemMessage(data);
         }
@@ -231,6 +268,8 @@ export class ConnectionManager {
       onDataMessage: (channel, data) => {
         if (channel === CHANNEL_CHAT) {
           addChatMessage(data.text, 'received');
+        } else if (channel === CHANNEL_FILE) {
+          this.handleFileMessage(data);
         } else if (channel === CHANNEL_SYSTEM) {
           this.handleSystemMessage(data);
         }
@@ -330,6 +369,147 @@ export class ConnectionManager {
       sender: this.machineName,
       timestamp: Date.now(),
     });
+  }
+
+  // === File Transfer ===
+
+  /**
+   * Send a file from local disk to the partner over the file data channel.
+   * Reads the file in chunks via main process IPC and streams them as
+   * base64-encoded chunk messages. Backpressure is honored by waiting
+   * when the data channel buffer grows too large.
+   */
+  async sendFile(filePath: string, fileName: string, fileSize: number): Promise<void> {
+    if (!this.peer) {
+      showToast('Chưa kết nối — không thể gửi file', 'error');
+      return;
+    }
+    if (!window.titanAPI?.file?.readChunk) {
+      showToast('Không có API đọc file', 'error');
+      return;
+    }
+
+    const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const CHUNK_SIZE = 64 * 1024; // 64 KB raw → ~88 KB base64, well under typical 256 KB SCTP limit
+    const totalChunks = Math.max(1, Math.ceil(fileSize / CHUNK_SIZE));
+
+    // Surface in UI immediately so the sender sees feedback even on tiny files.
+    addFileEntry(fileId, fileName, fileSize, 'sending');
+
+    const offer: FileOfferMessage = {
+      type: 'file', action: 'offer',
+      fileId, fileName, fileSize,
+      fileType: fileName.split('.').pop() || '',
+    };
+    if (!this.peer.send(CHANNEL_FILE, offer)) {
+      updateFileProgress(fileId, 0, 'error');
+      return;
+    }
+
+    let offset = 0;
+    let chunkIndex = 0;
+    while (offset < fileSize) {
+      const remaining = fileSize - offset;
+      const size = Math.min(CHUNK_SIZE, remaining);
+      const base64 = await window.titanAPI.file.readChunk(filePath, offset, size);
+      if (base64 == null) {
+        updateFileProgress(fileId, 0, 'error');
+        showToast(`Lỗi đọc file ${fileName}`, 'error');
+        return;
+      }
+
+      const chunk: FileChunkMessage = {
+        type: 'file', action: 'chunk',
+        fileId, chunkIndex, totalChunks,
+        data: base64,
+      };
+
+      // Backpressure: pause when the SCTP send buffer is congested.
+      // Without this, large files crash the data channel.
+      const channel = (this.peer as any)?.dataChannels?.get?.(CHANNEL_FILE) as RTCDataChannel | undefined;
+      if (channel) {
+        while (channel.bufferedAmount > 1_000_000) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+
+      if (!this.peer.send(CHANNEL_FILE, chunk)) {
+        updateFileProgress(fileId, 0, 'error');
+        showToast(`Mất kết nối khi gửi ${fileName}`, 'error');
+        return;
+      }
+
+      offset += size;
+      chunkIndex += 1;
+      const percent = Math.round((offset / fileSize) * 100);
+      updateFileProgress(fileId, percent, 'sending');
+    }
+
+    this.peer.send(CHANNEL_FILE, {
+      type: 'file', action: 'complete', fileId,
+    });
+    updateFileProgress(fileId, 100, 'complete');
+  }
+
+  /**
+   * Process incoming file messages on the receiver side.
+   * offer  → register a buffer
+   * chunk  → append + update progress
+   * complete → write to disk via main process and mark done
+   */
+  private async handleFileMessage(msg: FileMessage): Promise<void> {
+    if (!msg || msg.type !== 'file') return;
+
+    if (msg.action === 'offer') {
+      this.incomingFiles.set(msg.fileId, {
+        name: msg.fileName,
+        size: msg.fileSize,
+        chunks: new Array(0),
+        received: 0,
+      });
+      addFileEntry(msg.fileId, msg.fileName, msg.fileSize, 'receiving');
+      return;
+    }
+
+    if (msg.action === 'chunk') {
+      const entry = this.incomingFiles.get(msg.fileId);
+      if (!entry) return;
+      // Store chunk by index so out-of-order arrivals (shouldn't happen on
+      // ordered channels, but be defensive) still reassemble correctly.
+      entry.chunks[msg.chunkIndex] = msg.data;
+      entry.received += 1;
+      const percent = Math.round((entry.received / msg.totalChunks) * 100);
+      updateFileProgress(msg.fileId, percent, 'receiving');
+      return;
+    }
+
+    if (msg.action === 'complete') {
+      const entry = this.incomingFiles.get(msg.fileId);
+      if (!entry) return;
+      try {
+        // Concatenate base64 chunks then hand off to main for disk write.
+        const fullBase64 = entry.chunks.join('');
+        const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64);
+        if (result?.success) {
+          updateFileProgress(msg.fileId, 100, 'complete');
+          showToast(`Đã nhận: ${entry.name}`, 'success');
+        } else {
+          updateFileProgress(msg.fileId, 0, 'error');
+          showToast(`Lỗi lưu ${entry.name}`, 'error');
+        }
+      } catch (err) {
+        console.error('[Conn] saveFile failed:', err);
+        updateFileProgress(msg.fileId, 0, 'error');
+      } finally {
+        this.incomingFiles.delete(msg.fileId);
+      }
+      return;
+    }
+
+    if (msg.action === 'error') {
+      updateFileProgress(msg.fileId, 0, 'error');
+      this.incomingFiles.delete(msg.fileId);
+    }
   }
 
   // === Quality Control ===

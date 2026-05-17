@@ -286,9 +286,10 @@ function setupSessionEvents() {
     try {
       if (window.titanAPI?.file) {
         const files = await window.titanAPI.file.selectFiles();
-        if (files) {
-          files.forEach((f: any) => addFileToList(f.name, f.size, 'sending'));
-          showToast(`Đang gửi ${files.length} file...`, 'info');
+        if (files && files.length > 0) {
+          for (const f of files) {
+            await window.connectionManager?.sendFile(f.path, f.name, f.size);
+          }
         }
       }
     } catch (e) {
@@ -306,13 +307,20 @@ function setupSessionEvents() {
     dropZone.addEventListener('dragleave', () => {
       dropZone.classList.remove('drag-over');
     });
-    dropZone.addEventListener('drop', (e) => {
+    dropZone.addEventListener('drop', async (e) => {
       e.preventDefault();
       dropZone.classList.remove('drag-over');
       const files = e.dataTransfer?.files;
-      if (files && files.length > 0) {
-        Array.from(files).forEach((f) => addFileToList(f.name, f.size, 'sending'));
-        showToast(`Đang gửi ${files.length} file...`, 'info');
+      if (!files || files.length === 0) return;
+      // Drag-and-drop in Electron exposes the absolute path on File via
+      // (file as any).path, which is what file:readChunk expects.
+      for (const f of Array.from(files)) {
+        const filePath = (f as any).path as string | undefined;
+        if (!filePath) {
+          showToast('Không lấy được đường dẫn file — hãy dùng nút Chọn file', 'error');
+          continue;
+        }
+        await window.connectionManager?.sendFile(filePath, f.name, f.size);
       }
     });
   }
@@ -472,9 +480,15 @@ export function exitHostMode(): void {
 }
 
 /**
- * Add file to transfer list
+ * Add file to transfer list. Returns the row element so the caller can
+ * update its progress as chunks flow.
  */
-function addFileToList(name: string, size: number, status: 'sending' | 'receiving' | 'complete') {
+export function addFileEntry(
+  fileId: string,
+  name: string,
+  size: number,
+  status: 'sending' | 'receiving' | 'complete'
+): void {
   const list = document.getElementById('file-list');
   if (!list) return;
 
@@ -484,14 +498,50 @@ function addFileToList(name: string, size: number, status: 'sending' | 'receivin
 
   const item = document.createElement('div');
   item.className = 'file-item';
+  item.dataset.fileId = fileId;
   item.innerHTML = `
     <div class="file-item-info">
       <div class="file-item-name">${name}</div>
-      <div class="file-item-size">${sizeStr} — ${status === 'sending' ? 'Đang gửi' : status === 'receiving' ? 'Đang nhận' : 'Hoàn thành'}</div>
-      <div class="file-progress"><div class="file-progress-bar" style="width: ${status === 'complete' ? '100' : '0'}%"></div></div>
+      <div class="file-item-size" data-size>${sizeStr} — ${status === 'sending' ? 'Đang gửi' : status === 'receiving' ? 'Đang nhận' : 'Hoàn thành'}</div>
+      <div class="file-progress"><div class="file-progress-bar" data-bar style="width: ${status === 'complete' ? '100' : '0'}%"></div></div>
     </div>
   `;
   list.appendChild(item);
+
+  // Auto-open file panel so user sees progress.
+  document.getElementById('file-panel')?.classList.remove('hidden');
+  document.getElementById('btn-file-transfer')?.classList.add('active');
+}
+
+/**
+ * Update progress bar + status label for an in-flight transfer.
+ * @param percent 0-100
+ * @param status display status text
+ */
+export function updateFileProgress(
+  fileId: string,
+  percent: number,
+  status: 'sending' | 'receiving' | 'complete' | 'error'
+): void {
+  const list = document.getElementById('file-list');
+  if (!list) return;
+  const row = list.querySelector(`.file-item[data-file-id="${fileId}"]`);
+  if (!row) return;
+  const bar = row.querySelector('[data-bar]') as HTMLElement | null;
+  const sizeEl = row.querySelector('[data-size]') as HTMLElement | null;
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (sizeEl) {
+    const labelMap: Record<string, string> = {
+      sending: 'Đang gửi',
+      receiving: 'Đang nhận',
+      complete: 'Hoàn thành',
+      error: 'Lỗi',
+    };
+    // Keep the original size prefix if present.
+    const original = sizeEl.textContent || '';
+    const sizePrefix = original.split('—')[0]?.trim() || '';
+    sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
+  }
 }
 
 /**
