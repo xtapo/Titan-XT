@@ -6,15 +6,18 @@
 import { renderHomePage } from './pages/home';
 import { renderSessionPage } from './pages/session';
 import { showToast } from './components/toast';
+import { ConnectionManager } from './lib/connection';
 
 declare global {
   interface Window {
     titanAPI: any;
+    connectionManager?: ConnectionManager;
   }
 }
 
 // === State ===
 let currentPage: 'home' | 'session' = 'home';
+let connectionManager: ConnectionManager | null = null;
 
 // === Navigation ===
 export function navigateTo(page: 'home' | 'session') {
@@ -30,6 +33,26 @@ async function init() {
 
   // Setup titlebar controls
   setupTitlebar();
+
+  // Initialize connection manager
+  connectionManager = new ConnectionManager();
+  window.connectionManager = connectionManager;
+
+  // Connect to signal server
+  try {
+    const identity = await window.titanAPI?.identity?.get();
+    if (identity) {
+      const connected = await connectionManager.connectToServer(
+        identity.machineId,
+        identity.machineName || 'Unknown'
+      );
+      if (!connected) {
+        showToast('Không thể kết nối server', 'error');
+      }
+    }
+  } catch (e) {
+    console.error('[Main] Failed to connect to server:', e);
+  }
 
   // Render home page
   await renderHomePage();

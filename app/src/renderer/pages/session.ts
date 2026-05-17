@@ -215,23 +215,26 @@ function setupSessionEvents() {
 
   // Listen for session start
   window.addEventListener('start-session', ((e: CustomEvent) => {
-    const { partnerId } = e.detail;
+    const { partnerId, password, mode } = e.detail;
     const partnerName = document.getElementById('toolbar-partner-name');
     if (partnerName) {
       const fmtId = `${partnerId.substring(0, 3)} ${partnerId.substring(3, 6)} ${partnerId.substring(6, 9)}`;
       partnerName.textContent = `Đang kết nối đến ${fmtId}...`;
     }
 
-    // Simulate connection (in real app, WebRTC handles this)
-    setTimeout(() => {
-      const overlay = document.getElementById('video-overlay');
-      if (overlay) overlay.classList.add('hidden');
-      if (partnerName) {
-        const fmtId = `${partnerId.substring(0, 3)} ${partnerId.substring(3, 6)} ${partnerId.substring(6, 9)}`;
-        partnerName.textContent = fmtId;
-      }
-      showToast('Kết nối thành công!', 'success');
-    }, 2000);
+    // Start real WebRTC connection
+    if (window.connectionManager) {
+      window.connectionManager.connectToPartner(partnerId, password, mode).catch((err) => {
+        console.error('[Session] Connection failed:', err);
+        showToast('Kết nối thất bại', 'error');
+        const overlay = document.getElementById('video-overlay');
+        const statusText = document.getElementById('session-status-text');
+        if (statusText) statusText.textContent = 'Kết nối thất bại';
+      });
+    } else {
+      console.error('[Session] ConnectionManager not initialized');
+      showToast('Lỗi hệ thống', 'error');
+    }
   }) as EventListener);
 }
 

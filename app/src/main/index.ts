@@ -28,6 +28,7 @@ function createMainWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webSecurity: false, // Allow screen capture
     },
     show: false,
   });

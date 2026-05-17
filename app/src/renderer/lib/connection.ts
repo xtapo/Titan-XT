@@ -164,30 +164,22 @@ export class ConnectionManager {
 
     // Capture screen and add to peer
     try {
-      const sources = await (window as any).navigator.mediaDevices.getUserMedia({
+      // Get screen sources using Electron's desktopCapturer
+      const sources = await (navigator.mediaDevices as any).getDisplayMedia({
         audio: false,
         video: {
-          mandatory: {
-            chromeMediaSource: 'screen',
-            maxWidth: 1920,
-            maxHeight: 1080,
-            maxFrameRate: 30,
-          },
-        } as any,
+          displaySurface: 'monitor',
+          width: { max: 1920 },
+          height: { max: 1080 },
+          frameRate: { max: 30 },
+        },
       });
+
       this.peer.addStream(sources);
+      console.log('[Conn] Screen capture successful');
     } catch (err) {
       console.error('[Conn] Screen capture failed:', err);
-      // Try alternative method
-      try {
-        const stream = await (window as any).navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: 30 },
-          audio: false,
-        });
-        this.peer.addStream(stream);
-      } catch (e) {
-        console.error('[Conn] Display media also failed:', e);
-      }
+      showToast('Không thể chia sẻ màn hình', 'error');
     }
 
     // Create and send offer
