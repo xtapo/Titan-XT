@@ -110,9 +110,9 @@ export class ConnectionManager {
     });
 
     // Wait for challenge nonce
-    this.socket.once('connect-challenge', (data: any) => {
-      // Hash password with nonce
-      const hash = this.hashPassword(password, data.nonce);
+    this.socket.once('connect-challenge', async (data: any) => {
+      // Hash password with nonce using SHA-256 (must match host's identity.ts)
+      const hash = await this.hashPassword(password, data.nonce);
       this.socket!.emit('password-verify', {
         toId: partnerId,
         passwordHash: hash,
@@ -271,16 +271,12 @@ export class ConnectionManager {
 
   // === Password Helpers ===
 
-  private hashPassword(password: string, nonce: string): string {
-    // Simple hash for browser (in production use SubtleCrypto)
-    let hash = 0;
-    const str = password + nonce;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(36);
+  private async hashPassword(password: string, nonce: string): Promise<string> {
+    const data = new TextEncoder().encode(password + nonce);
+    const buf = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
   }
 
   private async verifyPassword(hash: string, nonce: string): Promise<boolean> {

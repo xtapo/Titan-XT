@@ -22,7 +22,7 @@ function createMainWindow(): void {
     frame: false,
     transparent: false,
     backgroundColor: '#0a0a0f',
-    icon: path.join(__dirname, '../../../resources/icon.png'),
+    icon: path.join(__dirname, '../../resources/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -36,14 +36,38 @@ function createMainWindow(): void {
   // Load renderer
   if (!app.isPackaged) {
     mainWindow.loadURL('http://localhost:5173');
-    // mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
+    const indexPath = path.join(__dirname, '../renderer/index.html');
+    console.log('[Main] Loading renderer from:', indexPath);
+    mainWindow.loadFile(indexPath).catch((err) => {
+      console.error('[Main] Failed to load renderer:', err);
+    });
+  }
+
+  // Open DevTools in production for debugging (remove after fixing)
+  if (process.env.TITAN_DEBUG === '1' || app.isPackaged) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
   // Show when ready
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Fallback: force show after 3s in case ready-to-show never fires
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      console.warn('[Main] ready-to-show never fired — forcing show');
+      mainWindow.show();
+    }
+  }, 3000);
+
+  // Log renderer crashes / load failures
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[Main] did-fail-load: ${code} ${desc} ${url}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[Main] render-process-gone:', details);
   });
 
   // Minimize to tray instead of close
@@ -67,7 +91,7 @@ function createMainWindow(): void {
 function createTray(): void {
   // Create a simple 16x16 icon programmatically if no icon file
   let icon: Electron.NativeImage;
-  const iconPath = path.join(__dirname, '../../../resources/icon.png');
+  const iconPath = path.join(__dirname, '../../resources/icon.png');
 
   try {
     icon = nativeImage.createFromPath(iconPath);
