@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('titanAPI', {
     simulate: (event: any) => ipcRenderer.invoke('input:simulate', event),
   },
 
+  // === Clipboard ===
+  clipboard: {
+    read: () => ipcRenderer.invoke('clipboard:read') as Promise<string>,
+    write: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+  },
+
   // === File ===
   file: {
     selectFiles: () => ipcRenderer.invoke('file:selectFiles'),

@@ -11,6 +11,8 @@ import {
   VIDEO_MAX_BITRATE,
   VIDEO_START_BITRATE,
   PREFERRED_VIDEO_CODECS,
+  QUALITY_PROFILES,
+  QualityPreset,
 } from '../../shared/constants';
 
 export type ConnectionState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed';
@@ -19,7 +21,7 @@ export interface PeerCallbacks {
   onRemoteStream?: (stream: MediaStream) => void;
   onDataMessage?: (channel: string, data: any) => void;
   onStateChange?: (state: ConnectionState) => void;
-  onStatsUpdate?: (stats: { latency: number; fps: number }) => void;
+  onStatsUpdate?: (stats: { latency: number; fps: number; bitrate: number }) => void;
 }
 
 export class PeerConnection {
@@ -153,22 +155,65 @@ export class PeerConnection {
       const caps = (RTCRtpSender as any).getCapabilities?.('video');
       if (!caps?.codecs) return;
 
-      const ordered: RTCRtpCodecCapability[] = [];
+      const codecs = caps.codecs as Array<{ mimeType: string }>;
+      const ordered: Array<{ mimeType: string }> = [];
       for (const want of PREFERRED_VIDEO_CODECS) {
-        for (const c of caps.codecs as RTCRtpCodecCapability[]) {
+        for (const c of codecs) {
           if (c.mimeType.toLowerCase() === want.toLowerCase() && !ordered.includes(c)) {
             ordered.push(c);
           }
         }
       }
       // Append any remaining codecs to keep negotiation viable
-      for (const c of caps.codecs as RTCRtpCodecCapability[]) {
+      for (const c of codecs) {
         if (!ordered.includes(c)) ordered.push(c);
       }
       (transceiver as any).setCodecPreferences(ordered);
     } catch (err) {
       console.warn('[WebRTC] Could not set codec preferences:', err);
     }
+  }
+
+  /**
+   * Apply a quality preset to the active video sender + capture track.
+   * Called on the HOST when the viewer requests a quality change via the
+   * system data channel, and once on initial setup.
+   */
+  async applyQualityProfile(preset: QualityPreset): Promise<void> {
+    const profile = QUALITY_PROFILES[preset];
+    if (!profile) return;
+
+    const videoSender = this.pc.getSenders().find((s) => s.track?.kind === 'video');
+    if (!videoSender) return;
+
+    // 1. Update encoder bitrate + framerate
+    try {
+      const params = videoSender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = profile.maxBitrate;
+      (params.encodings[0] as any).maxFramerate = profile.maxFramerate;
+      await videoSender.setParameters(params);
+    } catch (err) {
+      console.warn('[WebRTC] Could not update sender params for quality:', err);
+    }
+
+    // 2. Reduce capture resolution + framerate via track constraints
+    try {
+      const track = videoSender.track as MediaStreamTrack | null;
+      if (track && typeof track.applyConstraints === 'function') {
+        await track.applyConstraints({
+          width: { max: profile.maxWidth },
+          height: { max: profile.maxHeight },
+          frameRate: { max: profile.maxFramerate },
+        } as MediaTrackConstraints);
+      }
+    } catch (err) {
+      console.warn('[WebRTC] Could not apply track constraints for quality:', err);
+    }
+
+    console.log(`[WebRTC] Quality applied: ${preset} (${profile.label})`);
   }
 
   // === Data Channels ===
@@ -230,11 +275,14 @@ export class PeerConnection {
   // === Stats Monitor ===
 
   private startStatsMonitor(): void {
+    let lastBytes = 0;
+    let lastTimestamp = 0;
     this.statsInterval = window.setInterval(async () => {
       try {
         const stats = await this.pc.getStats();
         let latency = 0;
         let fps = 0;
+        let bitrate = 0;
 
         stats.forEach((report) => {
           if (report.type === 'candidate-pair' && report.state === 'succeeded') {
@@ -242,10 +290,18 @@ export class PeerConnection {
           }
           if (report.type === 'inbound-rtp' && report.kind === 'video') {
             fps = report.framesPerSecond || 0;
+            const bytes: number = report.bytesReceived || 0;
+            const ts: number = report.timestamp || 0;
+            if (lastTimestamp > 0 && ts > lastTimestamp) {
+              const seconds = (ts - lastTimestamp) / 1000;
+              bitrate = Math.round(((bytes - lastBytes) * 8) / seconds);
+            }
+            lastBytes = bytes;
+            lastTimestamp = ts;
           }
         });
 
-        this.callbacks.onStatsUpdate?.({ latency, fps: Math.round(fps) });
+        this.callbacks.onStatsUpdate?.({ latency, fps: Math.round(fps), bitrate });
       } catch {
         // ignore
       }

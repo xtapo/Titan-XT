@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, clipboard } from 'electron';
 import path from 'path';
 import os from 'os';
 import { APP_NAME } from '../shared/constants';
@@ -141,6 +141,10 @@ function setupIPC(): void {
   });
   ipcMain.handle('window:close', () => mainWindow?.close());
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized());
+
+  // Clipboard
+  ipcMain.handle('clipboard:read', () => clipboard.readText());
+  ipcMain.handle('clipboard:write', (_event, text: string) => clipboard.writeText(text));
 
   // App info
   ipcMain.handle('app:getInfo', () => ({

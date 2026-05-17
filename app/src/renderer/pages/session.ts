@@ -4,6 +4,10 @@
 
 import { showToast } from '../components/toast';
 import { navigateTo } from '../main';
+import { QUALITY_PROFILES, QualityPreset, DEFAULT_QUALITY } from '../../shared/constants';
+
+type DisplayFit = 'contain' | 'cover' | 'fill';
+let currentFit: DisplayFit = 'contain';
 
 /**
  * Render session page structure
@@ -40,6 +44,36 @@ export function renderSessionPage() {
               <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
             </svg>
           </button>
+
+          <!-- Quality dropdown (viewer side) -->
+          <div class="toolbar-dropdown" id="quality-dropdown">
+            <button class="toolbar-btn" id="btn-quality" title="Chất lượng">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 12h4l3-9 4 18 3-9h4"/>
+              </svg>
+              <span id="quality-label" class="toolbar-btn-label">Cao</span>
+            </button>
+            <div class="dropdown-menu hidden" id="quality-menu">
+              ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
+                .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
+                .join('')}
+            </div>
+          </div>
+
+          <!-- Display fit dropdown (viewer side, render-only) -->
+          <div class="toolbar-dropdown" id="fit-dropdown">
+            <button class="toolbar-btn" id="btn-fit" title="Hiển thị">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/>
+              </svg>
+              <span id="fit-label" class="toolbar-btn-label">Vừa khung</span>
+            </button>
+            <div class="dropdown-menu hidden" id="fit-menu">
+              <button class="dropdown-item" data-fit="contain">Vừa khung</button>
+              <button class="dropdown-item" data-fit="cover">Lấp đầy (cắt)</button>
+              <button class="dropdown-item" data-fit="fill">Kéo dãn</button>
+            </div>
+          </div>
           <div class="toolbar-separator"></div>
           <button class="toolbar-btn" id="btn-file-transfer" title="Truyền file">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -57,6 +91,7 @@ export function renderSessionPage() {
           <span class="toolbar-stats" id="toolbar-stats">
             <span class="stat-latency" id="stat-latency">--ms</span>
             <span class="stat-fps" id="stat-fps">--fps</span>
+            <span class="stat-bitrate" id="stat-bitrate">--</span>
           </span>
           <button class="toolbar-btn btn-danger" id="btn-disconnect" title="Ngắt kết nối">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -115,6 +150,33 @@ export function renderSessionPage() {
 }
 
 /**
+ * Wire toggle behavior for a toolbar dropdown:
+ * clicking the trigger toggles its menu and closes any others.
+ */
+function setupDropdown(rootId: string, triggerId: string, menuId: string) {
+  const trigger = document.getElementById(triggerId);
+  const menu = document.getElementById(menuId);
+  if (!trigger || !menu) return;
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Close other dropdowns
+    document.querySelectorAll('.dropdown-menu').forEach((m) => {
+      if (m.id !== menuId) m.classList.add('hidden');
+    });
+    menu.classList.toggle('hidden');
+  });
+
+  // Close on outside click
+  document.addEventListener('click', (e) => {
+    const root = document.getElementById(rootId);
+    if (root && !root.contains(e.target as Node)) {
+      menu.classList.add('hidden');
+    }
+  });
+}
+
+/**
  * Setup session event listeners
  */
 function setupSessionEvents() {
@@ -133,6 +195,47 @@ function setupSessionEvents() {
         wrapper.requestFullscreen();
       }
     }
+  });
+
+  // Quality dropdown
+  setupDropdown('quality-dropdown', 'btn-quality', 'quality-menu');
+  document.querySelectorAll('#quality-menu .dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const preset = (item as HTMLElement).dataset.quality as QualityPreset | undefined;
+      if (!preset) return;
+      const ok = window.connectionManager?.requestQuality(preset);
+      const label = document.getElementById('quality-label');
+      if (label) {
+        const map: Record<QualityPreset, string> = { high: 'Cao', medium: 'Trung bình', low: 'Thấp' };
+        label.textContent = map[preset];
+      }
+      document.getElementById('quality-menu')?.classList.add('hidden');
+      if (ok === false) {
+        showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
+      } else {
+        showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[preset].label}`, 'success');
+      }
+    });
+  });
+
+  // Display fit dropdown — render-only, doesn't touch the stream
+  setupDropdown('fit-dropdown', 'btn-fit', 'fit-menu');
+  document.querySelectorAll('#fit-menu .dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const fit = (item as HTMLElement).dataset.fit as DisplayFit | undefined;
+      if (!fit) return;
+      currentFit = fit;
+      const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+      if (video) video.style.objectFit = fit;
+      const label = document.getElementById('fit-label');
+      const labelMap: Record<DisplayFit, string> = {
+        contain: 'Vừa khung',
+        cover: 'Lấp đầy (cắt)',
+        fill: 'Kéo dãn',
+      };
+      if (label) label.textContent = labelMap[fit];
+      document.getElementById('fit-menu')?.classList.add('hidden');
+    });
   });
 
   // Toggle Chat
@@ -248,7 +351,14 @@ function sendChat() {
   input.value = '';
 
   addChatMessage(text, 'sent');
-  // TODO: Send via data channel
+
+  // Send via WebRTC data channel
+  if (window.connectionManager) {
+    const sent = window.connectionManager.sendChat(text);
+    if (!sent) {
+      showToast('Không thể gửi tin nhắn — chưa kết nối', 'error');
+    }
+  }
 }
 
 /**

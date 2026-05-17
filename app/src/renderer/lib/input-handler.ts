@@ -1,9 +1,15 @@
 /**
  * InputHandler — Captures mouse/keyboard events from the video element
- * and sends them via data channel to the remote host for simulation
+ * and sends them via data channel to the remote host for simulation.
+ *
+ * Clipboard sync:
+ *   Ctrl+V → read viewer clipboard → send to host via system channel → host
+ *            writes to its clipboard → host simulates Ctrl+V
+ *   Ctrl+C → host simulates Ctrl+C → reads its clipboard → sends back to
+ *            viewer → viewer writes to local clipboard
  */
 
-import { CHANNEL_INPUT } from '../../shared/constants';
+import { CHANNEL_INPUT, CHANNEL_SYSTEM } from '../../shared/constants';
 import { MouseMessage, KeyMessage } from '../../shared/protocol';
 import { PeerConnection } from './webrtc';
 
@@ -116,6 +122,19 @@ export class InputHandler {
     return mods;
   }
 
+  /**
+   * Check if this is a clipboard shortcut (Ctrl+C, Ctrl+V, Ctrl+X)
+   */
+  private isClipboardShortcut(e: KeyboardEvent): 'copy' | 'paste' | 'cut' | null {
+    const isCtrl = e.ctrlKey || e.metaKey;
+    if (!isCtrl) return null;
+    const k = e.key.toLowerCase();
+    if (k === 'v') return 'paste';
+    if (k === 'c') return 'copy';
+    if (k === 'x') return 'cut';
+    return null;
+  }
+
   // === Mouse Handlers ===
 
   private onMouseMove = (e: MouseEvent) => {
@@ -170,6 +189,22 @@ export class InputHandler {
 
   private onKeyDown = (e: KeyboardEvent) => {
     e.preventDefault();
+
+    const clipAction = this.isClipboardShortcut(e);
+
+    if (clipAction === 'paste') {
+      // Ctrl+V: Read viewer clipboard → send to host → host pastes
+      this.handlePaste();
+      return;
+    }
+
+    if (clipAction === 'copy' || clipAction === 'cut') {
+      // Ctrl+C / Ctrl+X: Send keystroke to host → then request clipboard back
+      this.handleCopyOrCut(e, clipAction);
+      return;
+    }
+
+    // Normal key — send as-is
     const msg: KeyMessage = {
       type: 'key', action: 'down',
       key: e.key, code: e.code,
@@ -180,6 +215,12 @@ export class InputHandler {
 
   private onKeyUp = (e: KeyboardEvent) => {
     e.preventDefault();
+
+    // Skip key-up for clipboard shortcuts that were intercepted on key-down.
+    // The host side already received the full key sequence via the system
+    // channel, so sending an orphan key-up would confuse the nut.js simulator.
+    if (this.isClipboardShortcut(e)) return;
+
     const msg: KeyMessage = {
       type: 'key', action: 'up',
       key: e.key, code: e.code,
@@ -187,4 +228,53 @@ export class InputHandler {
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
+
+  // === Clipboard Sync ===
+
+  /**
+   * Viewer presses Ctrl+V:
+   * 1. Read viewer's local clipboard
+   * 2. Send clipboard text to host via system channel
+   * 3. Host will write to its clipboard then simulate Ctrl+V
+   */
+  private async handlePaste(): Promise<void> {
+    try {
+      const text = await window.titanAPI?.clipboard?.read();
+      if (text != null) {
+        this.peer.send(CHANNEL_SYSTEM, {
+          type: 'system',
+          action: 'clipboard',
+          data: { direction: 'viewer-to-host', text },
+        });
+        console.log('[Input] Clipboard paste sent to host', text.length, 'chars');
+      }
+    } catch (err) {
+      console.error('[Input] Failed to read clipboard for paste:', err);
+    }
+  }
+
+  /**
+   * Viewer presses Ctrl+C or Ctrl+X:
+   * 1. Send the keystroke to host so it copies/cuts on its side
+   * 2. Request host to read its clipboard and send it back
+   */
+  private handleCopyOrCut(e: KeyboardEvent, action: 'copy' | 'cut'): void {
+    // Send the actual Ctrl+C / Ctrl+X keystrokes to the host
+    const downMsg: KeyMessage = {
+      type: 'key', action: 'down',
+      key: e.key, code: e.code,
+      modifiers: this.getModifiers(e),
+    };
+    this.peer.send(CHANNEL_INPUT, downMsg);
+
+    // After a short delay, ask host to read its clipboard and send it back
+    setTimeout(() => {
+      this.peer.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'clipboard',
+        data: { direction: 'request-from-host' },
+      });
+      console.log(`[Input] Clipboard ${action} — requested host clipboard`);
+    }, 200);
+  }
 }

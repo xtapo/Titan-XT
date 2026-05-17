@@ -25,6 +25,43 @@ export const VIDEO_MAX_BITRATE = 6_000_000; // 6 Mbps — good for 1080p screen 
 export const VIDEO_START_BITRATE = 2_500_000;
 export const PREFERRED_VIDEO_CODECS = ['video/H264', 'video/VP9', 'video/VP8'];
 
+// Quality presets — viewer picks one, host re-applies sender params + capture constraints
+export type QualityPreset = 'high' | 'medium' | 'low';
+
+export interface QualityProfile {
+  label: string;
+  maxWidth: number;
+  maxHeight: number;
+  maxBitrate: number; // bits/second
+  maxFramerate: number;
+}
+
+export const QUALITY_PROFILES: Record<QualityPreset, QualityProfile> = {
+  high: {
+    label: 'Cao (1080p · 6 Mbps · 30fps)',
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxBitrate: 6_000_000,
+    maxFramerate: 30,
+  },
+  medium: {
+    label: 'Trung bình (720p · 3 Mbps · 30fps)',
+    maxWidth: 1280,
+    maxHeight: 720,
+    maxBitrate: 3_000_000,
+    maxFramerate: 30,
+  },
+  low: {
+    label: 'Thấp (540p · 1.5 Mbps · 15fps)',
+    maxWidth: 960,
+    maxHeight: 540,
+    maxBitrate: 1_500_000,
+    maxFramerate: 15,
+  },
+};
+
+export const DEFAULT_QUALITY: QualityPreset = 'high';
+
 // Data channel names
 export const CHANNEL_INPUT = 'input';
 export const CHANNEL_CHAT = 'chat';
