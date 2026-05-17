@@ -253,6 +253,111 @@ function setupHomeEvents() {
 
   // Connect button
   connectBtn?.addEventListener('click', handleConnect);
+
+  // Settings modal
+  document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
+}
+
+/**
+ * Build (once) and open the Settings modal. Loads current values from the
+ * persistent store on every open so external changes are reflected.
+ */
+async function openSettingsModal() {
+  let modal = document.getElementById('settings-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'settings-modal';
+    modal.className = 'settings-modal';
+    modal.innerHTML = `
+      <div class="settings-backdrop" data-close></div>
+      <div class="settings-dialog">
+        <div class="settings-header">
+          <h2>Cài đặt</h2>
+          <button class="btn-icon" id="btn-close-settings" data-close>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <h3>File nhận được</h3>
+            <div class="settings-field">
+              <label class="field-label">Thư mục lưu</label>
+              <div class="folder-row">
+                <input type="text" id="settings-download-folder" class="input-field"
+                       placeholder="Mặc định: Downloads/Titan-XT" readonly />
+                <button class="btn-secondary" id="btn-pick-folder">Chọn...</button>
+                <button class="btn-text" id="btn-reset-folder" title="Dùng mặc định">Mặc định</button>
+              </div>
+              <p class="field-hint">File nhận được sẽ tự động lưu vào thư mục này.</p>
+            </div>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-ask-before-save" />
+                <span>Hỏi vị trí lưu cho từng file</span>
+              </label>
+              <p class="field-hint">Khi bật, mỗi file nhận được sẽ mở hộp thoại Save As.</p>
+            </div>
+          </div>
+        </div>
+        <div class="settings-footer">
+          <button class="btn-text" data-close>Hủy</button>
+          <button class="btn-primary" id="btn-save-settings">Lưu</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Wire close handlers (backdrop + close button + cancel)
+    modal.querySelectorAll('[data-close]').forEach((el) =>
+      el.addEventListener('click', () => modal!.classList.remove('open'))
+    );
+
+    // Folder picker
+    document.getElementById('btn-pick-folder')?.addEventListener('click', async () => {
+      const picked = await window.titanAPI?.dialog?.selectFolder();
+      if (picked) {
+        const input = document.getElementById('settings-download-folder') as HTMLInputElement;
+        if (input) input.value = picked;
+      }
+    });
+
+    // Reset folder to default (empty string in storage)
+    document.getElementById('btn-reset-folder')?.addEventListener('click', () => {
+      const input = document.getElementById('settings-download-folder') as HTMLInputElement;
+      if (input) input.value = '';
+    });
+
+    // Save
+    document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
+      const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
+      const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
+      try {
+        await window.titanAPI?.settings?.update({
+          downloadFolder: folderInput?.value || '',
+          askBeforeSave: !!askInput?.checked,
+        });
+        showToast('Đã lưu cài đặt', 'success');
+        modal!.classList.remove('open');
+      } catch (e) {
+        showToast('Lỗi lưu cài đặt', 'error');
+      }
+    });
+  }
+
+  // Load current values
+  try {
+    const settings = await window.titanAPI?.settings?.get();
+    const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
+    const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
+    if (folderInput) folderInput.value = settings?.downloadFolder || '';
+    if (askInput) askInput.checked = !!settings?.askBeforeSave;
+  } catch {
+    // best-effort
+  }
+
+  modal.classList.add('open');
 }
 
 /**

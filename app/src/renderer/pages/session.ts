@@ -9,6 +9,8 @@ import { QUALITY_PROFILES, QualityPreset, DEFAULT_QUALITY } from '../../shared/c
 type DisplayFit = 'contain' | 'cover' | 'fill';
 let currentFit: DisplayFit = 'contain';
 let isHostMode = false;
+let hostPanelCollapsed = false;
+const hostViewers = new Map<string, { id: string; name: string }>();
 
 /**
  * Render session page structure
@@ -374,6 +376,12 @@ function sendChat() {
  * Add chat message to UI
  */
 export function addChatMessage(text: string, type: 'sent' | 'received') {
+  // Host mode renders chat in the mini panel instead of the side drawer.
+  if (isHostMode) {
+    addHostPanelChat(text, type);
+    return;
+  }
+
   const container = document.getElementById('chat-messages');
   if (!container) return;
 
@@ -390,84 +398,134 @@ export function addChatMessage(text: string, type: 'sent' | 'received') {
   if (type === 'received') {
     const panel = document.getElementById('chat-panel');
     if (panel?.classList.contains('hidden')) {
-      // On host mode, auto-open chat panel for incoming messages
-      if (isHostMode) {
-        panel.classList.remove('hidden');
-        document.getElementById('btn-chat')?.classList.add('active');
-      } else {
-        const badge = document.getElementById('chat-badge');
-        if (badge) {
-          const count = parseInt(badge.textContent || '0') + 1;
-          badge.textContent = count.toString();
-          badge.classList.remove('hidden');
-        }
+      const badge = document.getElementById('chat-badge');
+      if (badge) {
+        const count = parseInt(badge.textContent || '0') + 1;
+        badge.textContent = count.toString();
+        badge.classList.remove('hidden');
       }
     }
   }
 }
 
 /**
+ * Append a chat row to the host-mode mini panel.
+ * Auto-expands the panel on incoming messages so the host doesn't miss them.
+ */
+function addHostPanelChat(text: string, type: 'sent' | 'received'): void {
+  const list = document.getElementById('host-panel-chat');
+  if (!list) return;
+
+  const senderLabel =
+    type === 'received'
+      ? Array.from(hostViewers.values())[0]?.name || 'Khách'
+      : 'Bạn';
+
+  const row = document.createElement('div');
+  row.className = `host-panel-chat-row host-panel-chat-${type}`;
+  row.innerHTML = `
+    <div class="host-panel-chat-sender">${senderLabel}:</div>
+    <div class="host-panel-chat-text">${escapeHtml(text)}</div>
+  `;
+  list.appendChild(row);
+  list.scrollTop = list.scrollHeight;
+
+  if (type === 'received' && hostPanelCollapsed) {
+    setHostPanelCollapsed(false);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
  * Enter host mode — called when this machine is being controlled.
- * Navigates to session page and adapts UI for host role:
- *   - Hides video area, shows "being controlled" status
- *   - Hides viewer-only buttons (monitor, fullscreen, quality, fit)
- *   - Keeps chat + file transfer + disconnect available
+ * Replaces the full session UI with a compact UltraViewer-style mini panel
+ * docked to the bottom-right of the screen. The panel can be collapsed
+ * to a thin tab via the chevron button.
  */
 export function enterHostMode(viewerId: string): void {
   isHostMode = true;
+  hostPanelCollapsed = false;
 
-  // Navigate to session page
+  // Track this viewer so the panel can list multiple connected viewers.
+  const fmtId = formatViewerId(viewerId);
+  hostViewers.set(viewerId, { id: viewerId, name: fmtId });
+
+  // Hide the regular titlebar and shrink the OS window into the mini-panel.
+  document.body.classList.add('host-mode');
+  window.titanAPI?.window?.setHostMode?.(true);
+
+  // Navigate to session page so its container is visible.
   navigateTo('session');
 
-  // Format viewer ID
-  const fmtId = viewerId.length >= 9
-    ? `${viewerId.substring(0, 3)} ${viewerId.substring(3, 6)} ${viewerId.substring(6, 9)}`
-    : viewerId;
-
-  // Update toolbar partner name
-  const partnerName = document.getElementById('toolbar-partner-name');
-  if (partnerName) {
-    partnerName.textContent = `Đang được điều khiển bởi ${fmtId}`;
-  }
-
-  // Replace video area with host status panel
-  const videoWrapper = document.getElementById('video-wrapper');
-  if (videoWrapper) {
-    videoWrapper.innerHTML = `
-      <div class="host-status-panel">
-        <div class="host-status-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="3" width="20" height="14" rx="2"/>
-            <path d="M8 21h8M12 17v4"/>
-            <circle cx="12" cy="10" r="3" fill="currentColor" opacity="0.3"/>
-          </svg>
+  // Build the mini panel UI in place of the regular session container.
+  const page = document.getElementById('page-session');
+  if (!page) return;
+  page.innerHTML = `
+    <div class="host-panel" id="host-panel">
+      <div class="host-panel-collapsed-tab" id="host-panel-tab" title="Mở rộng">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </div>
+      <div class="host-panel-body">
+        <div class="host-panel-header" id="host-panel-drag">
+          <div class="host-panel-title">
+            <span class="host-panel-brand">Titan-XT</span>
+            <span class="host-panel-count" id="host-panel-count">(${hostViewers.size} client)</span>
+          </div>
+          <div class="host-panel-actions">
+            <button class="host-panel-iconbtn" id="host-panel-collapse" title="Thu nhỏ">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+            </button>
+            <button class="host-panel-iconbtn" id="host-panel-min" title="Ẩn xuống tray">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+            <button class="host-panel-iconbtn host-panel-close" id="host-panel-close" title="Ngắt kết nối">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
         </div>
-        <h2 class="host-status-title">Đang được điều khiển</h2>
-        <p class="host-status-desc">Kỹ thuật viên <strong>${fmtId}</strong> đang xem màn hình của bạn</p>
-        <div class="host-status-indicator">
-          <span class="host-pulse"></span>
-          <span>Phiên đang hoạt động</span>
+
+        <div class="host-panel-section">
+          <div class="host-panel-section-title">Ai đang xem máy tính bạn</div>
+          <div class="host-panel-viewers" id="host-panel-viewers"></div>
+        </div>
+
+        <div class="host-panel-section host-panel-section-grow">
+          <div class="host-panel-section-title">Lịch sử chat</div>
+          <div class="host-panel-chat" id="host-panel-chat"></div>
+        </div>
+
+        <div class="host-panel-input">
+          <input type="text" id="host-panel-chat-input"
+                 placeholder="Nhấn phím F1 để chat nhanh"
+                 autocomplete="off" spellcheck="false" />
+          <button class="host-panel-send" id="host-panel-send" title="Gửi">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
         </div>
       </div>
-    `;
-  }
+    </div>
+  `;
 
-  // Hide viewer-only toolbar buttons
-  const viewerOnlyBtns = [
-    'btn-monitor-select',
-    'btn-fullscreen',
-    'quality-dropdown',
-    'fit-dropdown',
-  ];
-  viewerOnlyBtns.forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
-  });
-
-  // Hide stats (latency/fps/bitrate are viewer-side metrics)
-  const stats = document.getElementById('toolbar-stats');
-  if (stats) stats.style.display = 'none';
-
+  renderHostViewers();
+  setupHostPanelEvents();
   showToast(`${fmtId} đã kết nối vào máy của bạn`, 'info');
 }
 
@@ -477,6 +535,85 @@ export function enterHostMode(viewerId: string): void {
  */
 export function exitHostMode(): void {
   isHostMode = false;
+  hostPanelCollapsed = false;
+  hostViewers.clear();
+
+  document.body.classList.remove('host-mode', 'host-mode-collapsed');
+  window.titanAPI?.window?.setHostMode?.(false);
+
+  // Re-render the default session structure so a future viewer-side
+  // session has a clean DOM to mount onto.
+  renderSessionPage();
+}
+
+function formatViewerId(viewerId: string): string {
+  if (!viewerId) return 'Unknown';
+  if (viewerId.length >= 9) {
+    return `${viewerId.substring(0, 3)} ${viewerId.substring(3, 6)} ${viewerId.substring(6, 9)}`;
+  }
+  return viewerId;
+}
+
+function renderHostViewers(): void {
+  const list = document.getElementById('host-panel-viewers');
+  const count = document.getElementById('host-panel-count');
+  if (count) count.textContent = `(${hostViewers.size} client)`;
+  if (!list) return;
+  if (hostViewers.size === 0) {
+    list.innerHTML = '<div class="host-panel-viewer-empty">Chưa có ai kết nối</div>';
+    return;
+  }
+  list.innerHTML = Array.from(hostViewers.values())
+    .map(
+      (v) => `
+        <div class="host-panel-viewer">
+          <span class="host-panel-viewer-dot"></span>
+          <span class="host-panel-viewer-name">${v.name}</span>
+        </div>`,
+    )
+    .join('');
+}
+
+function setupHostPanelEvents(): void {
+  document.getElementById('host-panel-collapse')?.addEventListener('click', () => {
+    setHostPanelCollapsed(true);
+  });
+  document.getElementById('host-panel-tab')?.addEventListener('click', () => {
+    setHostPanelCollapsed(false);
+  });
+  document.getElementById('host-panel-min')?.addEventListener('click', () => {
+    window.titanAPI?.window?.minimize();
+  });
+  document.getElementById('host-panel-close')?.addEventListener('click', () => {
+    try {
+      window.connectionManager?.disconnect();
+    } catch (e) {
+      console.warn('[Host] disconnect error:', e);
+    }
+    // Return to the home page so the host has a normal UI again.
+    navigateTo('home');
+    showToast('Đã ngắt kết nối', 'info');
+  });
+
+  const input = document.getElementById('host-panel-chat-input') as HTMLInputElement | null;
+  const send = document.getElementById('host-panel-send');
+  const sendChatFromPanel = () => {
+    if (!input || !input.value.trim()) return;
+    const text = input.value.trim();
+    input.value = '';
+    addChatMessage(text, 'sent');
+    window.connectionManager?.sendChat(text);
+  };
+  send?.addEventListener('click', sendChatFromPanel);
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendChatFromPanel();
+  });
+}
+
+function setHostPanelCollapsed(collapsed: boolean): void {
+  hostPanelCollapsed = collapsed;
+  document.body.classList.toggle('host-mode-collapsed', collapsed);
+  window.titanAPI?.window?.setHostCollapsed?.(collapsed);
 }
 
 /**
@@ -489,12 +626,17 @@ export function addFileEntry(
   size: number,
   status: 'sending' | 'receiving' | 'complete'
 ): void {
-  const list = document.getElementById('file-list');
-  if (!list) return;
-
   const sizeStr = size < 1024 * 1024
     ? `${(size / 1024).toFixed(1)} KB`
     : `${(size / 1024 / 1024).toFixed(1)} MB`;
+
+  if (isHostMode) {
+    addHostPanelFile(fileId, name, sizeStr, status);
+    return;
+  }
+
+  const list = document.getElementById('file-list');
+  if (!list) return;
 
   const item = document.createElement('div');
   item.className = 'file-item';
@@ -514,6 +656,62 @@ export function addFileEntry(
 }
 
 /**
+ * Render a file transfer entry inside the host mini panel chat list,
+ * matching UltraViewer's file row style (icon + name + status + bar).
+ */
+function addHostPanelFile(
+  fileId: string,
+  name: string,
+  sizeStr: string,
+  status: 'sending' | 'receiving' | 'complete',
+): void {
+  const list = document.getElementById('host-panel-chat');
+  if (!list) return;
+
+  const senderLabel =
+    status === 'receiving'
+      ? Array.from(hostViewers.values())[0]?.name || 'Khách'
+      : 'Bạn';
+  const statusText =
+    status === 'sending'
+      ? 'Đang gửi'
+      : status === 'receiving'
+      ? 'Đang nhận'
+      : status === 'complete'
+      ? 'File Received'
+      : status;
+
+  const row = document.createElement('div');
+  row.className = 'host-panel-file-row';
+  row.dataset.fileId = fileId;
+  row.innerHTML = `
+    <div class="host-panel-chat-sender">${senderLabel}:</div>
+    <div class="host-panel-file">
+      <div class="host-panel-file-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
+          <polyline points="13 2 13 9 20 9"/>
+        </svg>
+      </div>
+      <div class="host-panel-file-info">
+        <div class="host-panel-file-name">${escapeHtml(name)}</div>
+        <div class="host-panel-file-status" data-size>${sizeStr} — ${statusText}</div>
+        <div class="host-panel-file-progress">
+          <div class="host-panel-file-progress-bar" data-bar
+               style="width: ${status === 'complete' ? '100' : '0'}%"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  list.appendChild(row);
+  list.scrollTop = list.scrollHeight;
+
+  if (status === 'receiving' && hostPanelCollapsed) {
+    setHostPanelCollapsed(false);
+  }
+}
+
+/**
  * Update progress bar + status label for an in-flight transfer.
  * @param percent 0-100
  * @param status display status text
@@ -523,6 +721,28 @@ export function updateFileProgress(
   percent: number,
   status: 'sending' | 'receiving' | 'complete' | 'error'
 ): void {
+  const labelMap: Record<string, string> = {
+    sending: 'Đang gửi',
+    receiving: 'Đang nhận',
+    complete: isHostMode ? 'File Received' : 'Hoàn thành',
+    error: 'Lỗi',
+  };
+
+  if (isHostMode) {
+    const list = document.getElementById('host-panel-chat');
+    const row = list?.querySelector(`.host-panel-file-row[data-file-id="${fileId}"]`);
+    if (!row) return;
+    const bar = row.querySelector('[data-bar]') as HTMLElement | null;
+    const sizeEl = row.querySelector('[data-size]') as HTMLElement | null;
+    if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (sizeEl) {
+      const original = sizeEl.textContent || '';
+      const sizePrefix = original.split('—')[0]?.trim() || '';
+      sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
+    }
+    return;
+  }
+
   const list = document.getElementById('file-list');
   if (!list) return;
   const row = list.querySelector(`.file-item[data-file-id="${fileId}"]`);
@@ -531,13 +751,6 @@ export function updateFileProgress(
   const sizeEl = row.querySelector('[data-size]') as HTMLElement | null;
   if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   if (sizeEl) {
-    const labelMap: Record<string, string> = {
-      sending: 'Đang gửi',
-      receiving: 'Đang nhận',
-      complete: 'Hoàn thành',
-      error: 'Lỗi',
-    };
-    // Keep the original size prefix if present.
     const original = sizeEl.textContent || '';
     const sizePrefix = original.split('—')[0]?.trim() || '';
     sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;

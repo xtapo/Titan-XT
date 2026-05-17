@@ -13,6 +13,8 @@ const defaultSettings: AppSettings = {
   hideWallpaper: false,
   requireManualApproval: false,
   allowedIPs: [],
+  downloadFolder: '',
+  askBeforeSave: false,
 };
 
 /**

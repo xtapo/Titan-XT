@@ -146,6 +146,12 @@ html, body {
   position: relative;
 }
 
+/* Host-mode: hide titlebar so the OS window is just the mini panel. */
+body.host-mode #titlebar { display: none; }
+body.host-mode #app { height: 100%; }
+body.host-mode { background: transparent; }
+body.host-mode #page-home { display: none; }
+
 .page {
   display: none;
   width: 100%;
@@ -181,3 +187,93 @@ html, body {
 }
 
 .animate-fadeIn { animation: fadeIn 0.4s ease forwards; }
+
+/* === Settings Modal === */
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.settings-modal.open { display: flex; }
+.settings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+}
+.settings-dialog {
+  position: relative;
+  width: min(560px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--bg-panel, #15151c);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+}
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+}
+.settings-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.settings-body {
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.settings-section h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #9aa1ad);
+}
+.settings-field { margin-bottom: 14px; }
+.settings-field:last-child { margin-bottom: 0; }
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary, #9aa1ad);
+}
+.folder-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.folder-row .input-field {
+  flex: 1;
+  min-width: 0;
+}
+.checkbox-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent, #7c5cff);
+}
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+}

@@ -35,6 +35,16 @@ export interface AppSettings {
   hideWallpaper: boolean;
   requireManualApproval: boolean;
   allowedIPs: string[];
+  /**
+   * Absolute folder path where received files are saved.
+   * Empty string falls back to <Downloads>/Titan-XT.
+   */
+  downloadFolder: string;
+  /**
+   * When true, prompt the user with a Save As dialog for every incoming file.
+   * When false, save silently to downloadFolder.
+   */
+  askBeforeSave: boolean;
 }
 
 export interface SessionState {

@@ -1,6 +1,24 @@
-import { ipcMain, dialog, app } from 'electron';
+import { ipcMain, dialog, app, BrowserWindow } from 'electron';
 import fs from 'fs';
 import path from 'path';
+import { getStore } from './store';
+import { AppSettings } from '../shared/types';
+
+/**
+ * Resolve the configured download folder, falling back to <Downloads>/Titan-XT
+ * when the user hasn't picked one. The folder is created on demand.
+ */
+function resolveSaveDir(): string {
+  const settings = getStore().get('settings') as AppSettings | undefined;
+  const configured = settings?.downloadFolder?.trim();
+  const dir = configured && configured.length > 0
+    ? configured
+    : path.join(app.getPath('downloads'), 'Titan-XT');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
 
 /**
  * FileTransfer — Handles file selection and saving for transfer
@@ -35,7 +53,7 @@ export function setupFileTransfer(): void {
       const buffer = Buffer.alloc(chunkSize);
       const bytesRead = fs.readSync(fd, buffer, 0, chunkSize, offset);
       fs.closeSync(fd);
-      return buffer.slice(0, bytesRead).toString('base64');
+      return buffer.subarray(0, bytesRead).toString('base64');
     } catch (err: any) {
       console.error('[File] Read error:', err);
       return null;
@@ -43,27 +61,39 @@ export function setupFileTransfer(): void {
   });
 
   // Save received file
-  ipcMain.handle('file:saveFile', async (_event, fileName: string, base64Data: string) => {
-    const downloadsPath = app.getPath('downloads');
-    const savePath = path.join(downloadsPath, 'Titan-XT');
+  ipcMain.handle('file:saveFile', async (event, fileName: string, base64Data: string) => {
+    const settings = getStore().get('settings') as AppSettings | undefined;
+    const saveDir = resolveSaveDir();
+    let finalPath: string;
 
-    // Ensure directory exists
-    if (!fs.existsSync(savePath)) {
-      fs.mkdirSync(savePath, { recursive: true });
-    }
-
-    // Avoid overwriting - add counter if file exists
-    let finalPath = path.join(savePath, fileName);
-    let counter = 1;
-    const ext = path.extname(fileName);
-    const nameWithoutExt = path.basename(fileName, ext);
-
-    while (fs.existsSync(finalPath)) {
-      finalPath = path.join(savePath, `${nameWithoutExt} (${counter})${ext}`);
-      counter++;
+    if (settings?.askBeforeSave) {
+      // Prompt the user. Default file is the suggested name inside saveDir.
+      const win = BrowserWindow.fromWebContents(event.sender) || undefined;
+      const result = await dialog.showSaveDialog(win!, {
+        title: 'Lưu file',
+        defaultPath: path.join(saveDir, fileName),
+      });
+      if (result.canceled || !result.filePath) {
+        return { success: false, error: 'Người dùng đã hủy' };
+      }
+      finalPath = result.filePath;
+    } else {
+      // Silent save — auto-rename on collision so we never overwrite.
+      finalPath = path.join(saveDir, fileName);
+      const ext = path.extname(fileName);
+      const base = path.basename(fileName, ext);
+      let counter = 1;
+      while (fs.existsSync(finalPath)) {
+        finalPath = path.join(saveDir, `${base} (${counter})${ext}`);
+        counter++;
+      }
     }
 
     try {
+      // Make sure the chosen directory exists (user may have typed a new path).
+      const dir = path.dirname(finalPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
       const buffer = Buffer.from(base64Data, 'base64');
       fs.writeFileSync(finalPath, buffer);
       console.log(`[File] Saved: ${finalPath}`);
@@ -72,6 +102,17 @@ export function setupFileTransfer(): void {
       console.error('[File] Save error:', err);
       return { success: false, error: err.message };
     }
+  });
+
+  // Pick a folder for storing received files
+  ipcMain.handle('dialog:selectFolder', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || undefined;
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Chọn thư mục lưu file nhận được',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
   });
 
   // Show file in explorer

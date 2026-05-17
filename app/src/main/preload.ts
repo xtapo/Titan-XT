@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
     maximize: () => ipcRenderer.invoke('window:maximize'),
     close: () => ipcRenderer.invoke('window:close'),
     isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+    setHostMode: (enable: boolean) => ipcRenderer.invoke('window:setHostMode', enable),
+    setHostCollapsed: (collapsed: boolean) => ipcRenderer.invoke('window:setHostCollapsed', collapsed),
     onMaximizeChange: (cb: (maximized: boolean) => void) => {
       ipcRenderer.on('window:maximizeChanged', (_e, maximized) => cb(maximized));
     },
@@ -50,6 +52,11 @@ contextBridge.exposeInMainWorld('titanAPI', {
     saveFile: (fileName: string, base64Data: string) =>
       ipcRenderer.invoke('file:saveFile', fileName, base64Data),
     showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
+  },
+
+  // === Dialog ===
+  dialog: {
+    selectFolder: () => ipcRenderer.invoke('dialog:selectFolder') as Promise<string | null>,
   },
 
   // === History ===

@@ -10,6 +10,37 @@ import { setupFileTransfer } from './file-transfer';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let originalBounds: Electron.Rectangle | null = null;
+let originalMinSize: { width: number, height: number } | null = null;
+
+// Host-mode panel sizing (UltraViewer-style mini panel docked bottom-right)
+const HOST_PANEL_WIDTH = 300;
+const HOST_PANEL_HEIGHT = 420;
+const HOST_PANEL_COLLAPSED_WIDTH = 28;
+const HOST_PANEL_COLLAPSED_HEIGHT = 80;
+const HOST_PANEL_MARGIN = 12;
+
+let hostModeActive = false;
+let hostCollapsed = false;
+
+/**
+ * Position + resize the host-mode mini panel docked to the bottom-right
+ * corner of the primary display's work area.
+ */
+function applyHostBounds(collapsed: boolean): void {
+  if (!mainWindow) return;
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const width = collapsed ? HOST_PANEL_COLLAPSED_WIDTH : HOST_PANEL_WIDTH;
+  const height = collapsed ? HOST_PANEL_COLLAPSED_HEIGHT : HOST_PANEL_HEIGHT;
+  mainWindow.setBounds({
+    x: workArea.x + workArea.width - width - HOST_PANEL_MARGIN,
+    y: workArea.y + workArea.height - height - HOST_PANEL_MARGIN,
+    width,
+    height,
+  });
+}
 
 // === Window Creation ===
 function createMainWindow(): void {
@@ -140,6 +171,42 @@ function setupIPC(): void {
   });
   ipcMain.handle('window:close', () => mainWindow?.close());
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized());
+  ipcMain.handle('window:setHostMode', (_event, enable: boolean) => {
+    if (!mainWindow) return;
+    if (enable) {
+      if (!originalBounds) {
+        originalBounds = mainWindow.getBounds();
+        const minSize = mainWindow.getMinimumSize();
+        originalMinSize = { width: minSize[0], height: minSize[1] };
+      }
+      hostModeActive = true;
+      hostCollapsed = false;
+      mainWindow.setResizable(false);
+      mainWindow.setMinimumSize(HOST_PANEL_COLLAPSED_WIDTH, HOST_PANEL_COLLAPSED_HEIGHT);
+      mainWindow.setAlwaysOnTop(true, 'floating');
+      mainWindow.setSkipTaskbar(false);
+      applyHostBounds(false);
+    } else {
+      hostModeActive = false;
+      hostCollapsed = false;
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.setResizable(true);
+      if (originalMinSize) {
+        mainWindow.setMinimumSize(originalMinSize.width, originalMinSize.height);
+      }
+      if (originalBounds) {
+        mainWindow.setBounds(originalBounds);
+        originalBounds = null;
+        originalMinSize = null;
+      }
+    }
+  });
+
+  ipcMain.handle('window:setHostCollapsed', (_event, collapsed: boolean) => {
+    if (!mainWindow || !hostModeActive) return;
+    hostCollapsed = !!collapsed;
+    applyHostBounds(hostCollapsed);
+  });
 
   // Clipboard
   ipcMain.handle('clipboard:read', () => clipboard.readText());
