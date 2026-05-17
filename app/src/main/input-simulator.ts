@@ -162,48 +162,22 @@ async function handleKey(msg: KeyMessage): Promise<void> {
  * Setup IPC handler for input simulation
  */
 export function setupInputSimulator(): void {
-  // Coalesce mouse-move events: if many arrive while nut.js is busy,
-  // we only act on the most recent one. Prevents queue buildup that
-  // makes the cursor lag behind reality.
-  let pendingMove: MouseMessage | null = null;
-  let processing = false;
-
-  async function drainMoves(): Promise<void> {
-    if (processing) return;
-    processing = true;
-    while (pendingMove) {
-      const msg = pendingMove;
-      pendingMove = null;
-      await handleMouse(msg);
-    }
-    processing = false;
-  }
-
-  ipcMain.on('input:simulate', async (_event, msg: MouseMessage | KeyMessage) => {
+  ipcMain.handle('input:simulate', async (_event, msg: MouseMessage | KeyMessage) => {
+    // Lazy load nut.js on first input
     if (!nutLoaded) {
       const loaded = await loadNut();
-      if (!loaded) return;
+      if (!loaded) return { success: false, error: 'nut.js not available' };
     }
 
     try {
       if (msg.type === 'mouse') {
-        if (msg.action === 'move') {
-          pendingMove = msg;
-          drainMoves();
-        } else {
-          // For clicks/scrolls, flush any pending move first so cursor is at right spot
-          if (pendingMove) {
-            const last = pendingMove;
-            pendingMove = null;
-            await handleMouse(last);
-          }
-          await handleMouse(msg);
-        }
+        await handleMouse(msg);
       } else if (msg.type === 'key') {
         await handleKey(msg);
       }
-    } catch (err) {
-      console.error('[Input] simulate error:', err);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
   });
 }

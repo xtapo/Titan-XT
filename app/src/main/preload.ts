@@ -33,8 +33,7 @@ contextBridge.exposeInMainWorld('titanAPI', {
 
   // === Input Simulation ===
   input: {
-    // Fire-and-forget — input must be low-latency, no need to await round-trip
-    simulate: (event: any) => ipcRenderer.send('input:simulate', event),
+    simulate: (event: any) => ipcRenderer.invoke('input:simulate', event),
   },
 
   // === File ===

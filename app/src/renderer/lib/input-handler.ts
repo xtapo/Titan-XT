@@ -11,8 +11,8 @@ export class InputHandler {
   private videoEl: HTMLVideoElement;
   private peer: PeerConnection;
   private enabled: boolean = false;
-  private pendingMove: { x: number; y: number } | null = null;
-  private rafHandle: number | null = null;
+  private lastMoveTime: number = 0;
+  private moveThrottleMs: number = 16; // ~60fps
 
   constructor(videoEl: HTMLVideoElement, peer: PeerConnection) {
     this.videoEl = videoEl;
@@ -54,12 +54,6 @@ export class InputHandler {
   disable(): void {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
-
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle);
-      this.rafHandle = null;
-    }
-    this.pendingMove = null;
 
     this.videoEl.removeEventListener('mousemove', this.onMouseMove);
     this.videoEl.removeEventListener('mousedown', this.onMouseDown);
@@ -125,17 +119,13 @@ export class InputHandler {
   // === Mouse Handlers ===
 
   private onMouseMove = (e: MouseEvent) => {
-    // Coalesce moves to one per frame. Sending every mousemove (~120-1000Hz)
-    // floods the data channel and the host's nut.js queue, causing visible lag.
-    this.pendingMove = this.getRelativeCoords(e);
-    if (this.rafHandle !== null) return;
-    this.rafHandle = requestAnimationFrame(() => {
-      this.rafHandle = null;
-      if (!this.pendingMove) return;
-      const msg: MouseMessage = { type: 'mouse', action: 'move', ...this.pendingMove };
-      this.pendingMove = null;
-      this.peer.send(CHANNEL_INPUT, msg);
-    });
+    const now = Date.now();
+    if (now - this.lastMoveTime < this.moveThrottleMs) return;
+    this.lastMoveTime = now;
+
+    const { x, y } = this.getRelativeCoords(e);
+    const msg: MouseMessage = { type: 'mouse', action: 'move', x, y };
+    this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onMouseDown = (e: MouseEvent) => {
