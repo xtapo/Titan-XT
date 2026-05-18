@@ -3,6 +3,7 @@
  */
 
 import { showToast } from '../components/toast';
+import { checkForUpdates } from '../components/update-banner';
 import { navigateTo } from '../main';
 
 let myId = '---';
@@ -173,6 +174,12 @@ export async function renderHomePage() {
         </svg>
         Cài đặt
       </button>
+      <button class="btn-text" id="btn-check-update" title="Kiểm tra phiên bản mới">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 11-3.5-7.1"/><polyline points="21 4 21 10 15 10"/>
+        </svg>
+        Kiểm tra cập nhật
+      </button>
       <span class="version-text" id="app-version-text">v…</span>
     </div>
   `;
@@ -271,6 +278,11 @@ function setupHomeEvents() {
 
   // Settings modal
   document.getElementById('btn-settings')?.addEventListener('click', openSettingsModal);
+
+  // Manual update check
+  document.getElementById('btn-check-update')?.addEventListener('click', () => {
+    checkForUpdates();
+  });
 }
 
 /**

@@ -3,9 +3,14 @@
  * version is available. User can download → install, or dismiss.
  */
 
+import { showToast } from './toast';
+
 let banner: HTMLDivElement | null = null;
 let currentState: 'available' | 'downloading' | 'downloaded' | null = null;
 let availableVersion: string | null = null;
+// Tracks whether the user just clicked "Kiểm tra cập nhật" so we can show a
+// toast when the result comes back as up-to-date / error.
+let manualCheckPending = false;
 
 export function initUpdateBanner(): void {
   window.titanAPI?.updater?.onStatus?.((status: any) => {
@@ -13,15 +18,43 @@ export function initUpdateBanner(): void {
   });
 }
 
+/**
+ * Trigger a user-initiated update check. Shows a toast with the result so
+ * the user gets feedback regardless of whether an update is available.
+ */
+export async function checkForUpdates(): Promise<void> {
+  if (manualCheckPending) return;
+  manualCheckPending = true;
+  showToast('Đang kiểm tra cập nhật...', 'info', 1500);
+  const result = await window.titanAPI?.updater?.check?.();
+  if (!result?.ok) {
+    manualCheckPending = false;
+    if (result?.reason === 'dev-mode') {
+      showToast('Auto-update chỉ hoạt động trong bản đã đóng gói', 'info');
+    } else {
+      showToast(`Không thể kiểm tra: ${result?.reason || 'Lỗi không xác định'}`, 'error');
+    }
+  }
+}
+
 function handleUpdateStatus(status: any): void {
   const { state } = status;
 
-  if (state === 'checking' || state === 'up-to-date') {
+  if (state === 'checking') {
+    return;
+  }
+
+  if (state === 'up-to-date') {
+    if (manualCheckPending) {
+      manualCheckPending = false;
+      showToast(`Đang dùng phiên bản mới nhất (${status.version})`, 'success');
+    }
     hideBanner();
     return;
   }
 
   if (state === 'available') {
+    manualCheckPending = false;
     availableVersion = status.version;
     currentState = 'available';
     showBanner(
@@ -46,11 +79,16 @@ function handleUpdateStatus(status: any): void {
     );
   } else if (state === 'error') {
     currentState = null;
-    showBanner(
-      `Lỗi cập nhật: ${status.message || 'Không xác định'}`,
-      'Đóng',
-      () => hideBanner()
-    );
+    if (manualCheckPending) {
+      manualCheckPending = false;
+      showToast(`Lỗi cập nhật: ${status.message || 'Không xác định'}`, 'error');
+    } else {
+      showBanner(
+        `Lỗi cập nhật: ${status.message || 'Không xác định'}`,
+        'Đóng',
+        () => hideBanner()
+      );
+    }
   }
 }
 
