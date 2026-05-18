@@ -57,6 +57,12 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    # Serialize after windows. electron-builder's `--publish always` uses the
+    # GitHub Releases API (create-or-update by tag), and running both jobs in
+    # parallel can race: the second job to "create" the release sometimes
+    # wipes the assets the first one already uploaded. Sequential is slower
+    # by ~5 min but produces a release with both Windows + macOS assets.
+    needs: windows
 
     defaults:
       run:
