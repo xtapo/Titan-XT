@@ -1,6 +1,6 @@
 # Titan-XT
 
-Phần mềm hỗ trợ điều khiển máy tính từ xa, lấy cảm hứng từ TeamViewer / UltraViewer. Xây dựng trên Electron + WebRTC, dùng signal server riêng để kết nối qua Internet hoặc LAN.
+Phần mềm hỗ trợ điều khiển máy tính từ xa. Xây dựng trên Electron + WebRTC, dùng signal server riêng để kết nối qua Internet hoặc LAN.
 
 [![Release](https://img.shields.io/github/v/release/xtapo/Titan-XT?style=flat-square&color=2563eb)](https://github.com/xtapo/Titan-XT/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/xtapo/Titan-XT/total?style=flat-square&color=22c55e)](https://github.com/xtapo/Titan-XT/releases)
