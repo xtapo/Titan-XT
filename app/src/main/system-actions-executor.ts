@@ -64,6 +64,12 @@ export async function executeRemoteAction(action: RemoteActionId): Promise<Actio
       if (platform === 'darwin') return run('open -a "Activity Monitor"');
       return run('gnome-system-monitor');
 
+    case 'hide-wallpaper':
+    case 'restore-wallpaper':
+      // Handled by main process directly (system-actions.ts) — the executor
+      // path is only reached if the caller bypassed that route.
+      return { success: false, error: 'Wallpaper action must run in user session' };
+
     default:
       return { success: false, error: `Hành động không hỗ trợ: ${action}` };
   }

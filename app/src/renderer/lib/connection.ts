@@ -23,6 +23,9 @@ import {
   DEFAULT_SIGNAL_SERVER,
   HEARTBEAT_INTERVAL,
   DEFAULT_QUALITY,
+  DEFAULT_MAX_WIDTH,
+  DEFAULT_MAX_HEIGHT,
+  DEFAULT_FPS,
   QualityPreset,
   ADAPTIVE_RTT_DOWNGRADE_MS,
   ADAPTIVE_RTT_UPGRADE_MS,
@@ -95,6 +98,13 @@ export class ConnectionManager {
   private controlLocked: boolean = false;
   // Viewer-side mirror — set when host pushes a control-lock message.
   private remoteControlLocked: boolean = false;
+
+  // === Multi-monitor (viewer-side cache) ===
+  // Host pushes its monitor list right after the data channel opens, plus
+  // any time the active source changes. We keep a copy so the View menu
+  // can render the picker without round-tripping every time it opens.
+  private remoteMonitors: Array<{ id: string; name: string; isPrimary: boolean }> = [];
+  private activeRemoteSourceId: string | null = null;
 
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
@@ -298,6 +308,15 @@ export class ConnectionManager {
           this.handleSystemMessage(data);
         }
       },
+      onChannelOpen: (channel) => {
+        // Once the system channel is open, push the host's monitor list to
+        // the viewer so the View menu can render the picker immediately.
+        if (channel === CHANNEL_SYSTEM && this.role === 'host') {
+          this.pushMonitorListToViewer().catch((err: unknown) =>
+            console.warn('[Conn] pushMonitorListToViewer failed:', err),
+          );
+        }
+      },
       onStateChange: (state) => {
         console.log('[Conn] Host peer state:', state);
         // Viewer dropped (disconnect, network loss, app close) — tear the
@@ -325,12 +344,17 @@ export class ConnectionManager {
       // In Electron, navigator.mediaDevices.getDisplayMedia is enabled via
       // session.setDisplayMediaRequestHandler in the main process (screen-capture.ts).
       // The handler picks the source; renderer constraints below only shape the stream.
+      //
+      // Cap capture at the highest preset's resolution so the encoder has the
+      // pixels available when the viewer asks for 4K. Lower presets clamp the
+      // track via applyConstraints() in webrtc.ts, so this max isn't binding
+      // when 'high'/'medium'/'low' are picked.
       const sources = await navigator.mediaDevices.getDisplayMedia({
         audio: false,
         video: {
-          width: { max: 1920 },
-          height: { max: 1080 },
-          frameRate: { max: 30 },
+          width: { max: DEFAULT_MAX_WIDTH },
+          height: { max: DEFAULT_MAX_HEIGHT },
+          frameRate: { max: DEFAULT_FPS },
         },
       });
 
@@ -394,7 +418,20 @@ export class ConnectionManager {
           // Don't retry if the user (or a fatal error) intentionally tore it down.
           if (this.intentionalClose) return;
           if (!this.viewerCredentials) return;
-          this.scheduleReconnect();
+          // Grace period: ICE drop usually beats the signal server's
+          // session-ended event by a few hundred ms. Without this wait, a
+          // host clicking "ngắt kết nối" causes the viewer to auto-reconnect
+          // before the session-ended message arrives — and the host
+          // re-accepts because its socket is still online. Two seconds is
+          // long enough for the signal to land, short enough that real
+          // network drops still recover quickly.
+          window.setTimeout(() => {
+            if (this.intentionalClose) return;
+            if (!this.viewerCredentials) return;
+            const pcState = (this.peer as any)?.connectionState;
+            if (pcState === 'connected') return;
+            this.scheduleReconnect();
+          }, 2_000);
         }
       },
       onStatsUpdate: (stats) => {
@@ -737,6 +774,111 @@ export class ConnectionManager {
     this.adaptiveCooldown = 0;
   }
 
+  // === Multi-monitor ===
+
+  /**
+   * Viewer-side: read-only access to the host's monitor list (cached from
+   * the latest 'monitor-list' message). The View menu uses this to render
+   * the picker without an extra round-trip.
+   */
+  get availableRemoteMonitors(): Array<{ id: string; name: string; isPrimary: boolean }> {
+    return this.remoteMonitors;
+  }
+
+  get currentRemoteSourceId(): string | null {
+    return this.activeRemoteSourceId;
+  }
+
+  /**
+   * Viewer-side: ask the host to share a specific monitor.
+   * The host swaps the video track in-place (no SDP renegotiation) so the
+   * `<video>` element keeps playing — only the picture changes.
+   */
+  requestMonitor(sourceId: string): boolean {
+    if (this.role !== 'viewer') return false;
+    return (
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'switch-monitor',
+        data: { sourceId },
+      }) ?? false
+    );
+  }
+
+  /**
+   * Host-side: gather the current monitor list (id + name + primary flag,
+   * stripped of thumbnails to keep the system message small) and push it to
+   * the viewer. Called when the system channel first opens and every time
+   * the active source changes.
+   */
+  private async pushMonitorListToViewer(): Promise<void> {
+    const api = (window as any).titanAPI?.screen;
+    if (!api?.getSources) return;
+    try {
+      const monitors = ((await api.getSources()) || []) as Array<{
+        id: string;
+        name: string;
+        isPrimary: boolean;
+      }>;
+      const slim = monitors.map((m) => ({
+        id: m.id,
+        name: m.name,
+        isPrimary: m.isPrimary,
+      }));
+      const activeSourceId = (await api.getSelectedSource?.()) ?? null;
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'monitor-list',
+        data: { monitors: slim, activeSourceId },
+      });
+    } catch (err) {
+      console.warn('[Conn] failed to enumerate monitors:', err);
+    }
+  }
+
+  /**
+   * Host-side: re-capture using the requested source id and replace the
+   * existing video track so the viewer's video stays continuous (no black
+   * flash, no SDP renegotiation). After swapping, push the updated monitor
+   * list so the viewer's picker reflects the new active selection.
+   */
+  private async handleMonitorSwitch(sourceId: string | undefined): Promise<void> {
+    if (!sourceId || !this.peer) return;
+    const api = (window as any).titanAPI?.screen;
+    if (!api?.selectSource) {
+      showToast('Bản dựng này chưa hỗ trợ đổi màn hình', 'info');
+      return;
+    }
+    try {
+      // Tell the main-process display media handler which source to bind to
+      // on the next getDisplayMedia call.
+      await api.selectSource(sourceId);
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        audio: false,
+        video: {
+          width: { max: DEFAULT_MAX_WIDTH },
+          height: { max: DEFAULT_MAX_HEIGHT },
+          frameRate: { max: DEFAULT_FPS },
+        },
+      });
+
+      const ok = await this.peer.replaceVideoTrack(stream);
+      if (!ok) {
+        showToast('Không đổi được màn hình chia sẻ', 'error');
+        return;
+      }
+      // Re-apply the active quality profile so the new track inherits the
+      // same bitrate caps + framerate as the previous one.
+      await this.peer.applyQualityProfile(this.currentQuality);
+      await this.pushMonitorListToViewer();
+      showToast('Đã đổi màn hình chia sẻ', 'success');
+    } catch (err) {
+      console.error('[Conn] handleMonitorSwitch error:', err);
+      showToast('Không đổi được màn hình chia sẻ', 'error');
+    }
+  }
+
   get isAdaptive(): boolean {
     return this.adaptiveEnabled;
   }
@@ -763,7 +905,7 @@ export class ConnectionManager {
     // forms — ignore those samples so we don't false-positive an "upgrade".
     if (rttMs <= 0) return;
 
-    const order: QualityPreset[] = ['high', 'medium', 'low'];
+    const order: QualityPreset[] = ['max', 'ultra', 'high', 'medium', 'low'];
     const idx = order.indexOf(this.currentQuality);
     if (idx === -1) return;
 
@@ -884,6 +1026,45 @@ export class ConnectionManager {
           });
         }
         break;
+
+      case 'switch-monitor':
+        // Viewer asked the host to share a different monitor. Re-capture using
+        // the requested source id and replace the existing track in-place.
+        if (this.role === 'host') {
+          this.handleMonitorSwitch(msg.data?.sourceId).catch((err) =>
+            console.warn('[Conn] handleMonitorSwitch failed:', err),
+          );
+        }
+        break;
+
+      case 'monitor-list':
+        // Host pushed its current list of monitors. Cache + render in the
+        // viewer's View menu so the user can pick.
+        if (this.role === 'viewer') {
+          this.remoteMonitors = Array.isArray(msg.data?.monitors) ? msg.data.monitors : [];
+          this.activeRemoteSourceId = msg.data?.activeSourceId || null;
+          import('../pages/session').then(({ updateMonitorMenu }) => {
+            updateMonitorMenu(this.remoteMonitors, this.activeRemoteSourceId);
+          });
+        }
+        break;
+
+      case 'peer-bye':
+        // Partner is tearing down on purpose. Mark this side intentional too
+        // so the viewer's onStateChange grace timer doesn't fire reconnect
+        // when the peer subsequently goes to 'disconnected'/'failed'.
+        // Travels over the data channel, so it's independent of the signal
+        // server's deploy state — works even if the server hasn't been
+        // restarted with the matching peer-disconnect handler.
+        if (!this.intentionalClose) {
+          this.intentionalClose = true;
+          this.cancelReconnect();
+          this.viewerCredentials = null;
+          this.disconnect();
+          showToast('Phiên kết nối đã kết thúc', 'info');
+          import('../main').then(({ navigateTo }) => navigateTo('home'));
+        }
+        break;
     }
   }
 
@@ -915,6 +1096,19 @@ export class ConnectionManager {
    */
   private handleRemoteActionResult(data: any): void {
     if (!data) return;
+    const action = data.action as string | undefined;
+    const isWallpaper = action === 'hide-wallpaper' || action === 'restore-wallpaper';
+
+    // Wallpaper toggle owns its own UX (the menu checkmark + a tailored toast)
+    // so we don't fire the generic toast for it. On failure, roll the optimistic
+    // local state back via the session module.
+    if (isWallpaper) {
+      import('../pages/session').then(({ onWallpaperResult }) => {
+        onWallpaperResult(action!, !!data.success, data.error);
+      });
+      return;
+    }
+
     if (data.success) {
       showToast('Đã thực hiện trên máy đối tác', 'success');
     } else {
@@ -1017,8 +1211,18 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
-    // Tell the other side we're tearing down on purpose, so they don't sit
-    // on the session UI waiting (host) or burn through reconnect attempts (viewer).
+    // Tell the partner we're leaving on purpose. Two paths so this works
+    // even if one of them is broken at the moment:
+    //   1) data channel → instant, doesn't depend on the signal server
+    //   2) signal server → fallback when the data channel already closed
+    try {
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'peer-bye',
+      });
+    } catch {
+      // best-effort
+    }
     if (this.partnerId && this.socket?.connected) {
       this.socket.emit('peer-disconnect', { toId: this.partnerId });
     }

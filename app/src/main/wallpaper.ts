@@ -131,9 +131,28 @@ export async function hideWallpaper(): Promise<{ success: boolean; error?: strin
     const blank = ensureBlackBmp();
     if (!existing) {
       const current = await readCurrentWallpaperPath();
-      const backup: WallpaperBackup = { path: current, hiddenAt: Date.now() };
+      // Windows often points the registry at TranscodedWallpaper, a cache
+      // file that gets overwritten the moment we apply blank.bmp. If we
+      // keep the original registry path as our backup, restore() will end
+      // up reading the now-blank cache and the desktop stays black.
+      // Copy the original bytes out to a stable location first.
+      let backupPath = current;
+      if (current && fs.existsSync(current)) {
+        try {
+          const dir = path.join(app.getPath('temp'), 'titan-xt');
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          const ext = path.extname(current) || '.img';
+          const copy = path.join(dir, `original-wallpaper${ext}`);
+          fs.copyFileSync(current, copy);
+          backupPath = copy;
+          console.log('[Wallpaper] copied original ->', copy);
+        } catch (err) {
+          console.warn('[Wallpaper] copy original failed, using registry path as backup:', err);
+        }
+      }
+      const backup: WallpaperBackup = { path: backupPath, hiddenAt: Date.now() };
       store.set(STORE_KEY, backup);
-      console.log('[Wallpaper] backup =', current || '(none)');
+      console.log('[Wallpaper] backup =', backupPath || '(none)');
     }
     const res = applyWallpaper(blank);
     if (!res.ok) {
@@ -184,6 +203,17 @@ export async function restoreOnStartup(): Promise<void> {
   const store = getStore();
   const backup = store.get(STORE_KEY) as WallpaperBackup | undefined;
   if (!backup) return;
+  // Old versions stored the registry path (often a Windows cache file that
+  // we overwrote with blank.bmp). If the backup path lives outside our
+  // temp dir, drop it — restoring would re-apply the blank cache and keep
+  // the desktop black. The user will need to set a new wallpaper manually,
+  // but at least we won't actively make it worse.
+  const ourTemp = path.join(app.getPath('temp'), 'titan-xt');
+  if (backup.path && !backup.path.startsWith(ourTemp)) {
+    console.log('[Wallpaper] startup recovery — discarding stale backup from old version:', backup.path);
+    store.delete(STORE_KEY);
+    return;
+  }
   console.log('[Wallpaper] startup recovery — restoring previously hidden wallpaper');
   await restoreWallpaper();
 }

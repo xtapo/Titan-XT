@@ -84,6 +84,11 @@ export function renderSessionPage() {
               <button class="dropdown-item" data-action="signout">Đăng xuất</button>
               <button class="dropdown-item" data-action="task-manager">Mở Task Manager</button>
               <div class="dropdown-divider"></div>
+              <button class="dropdown-item dropdown-item-toggle" data-action="toggle-wallpaper" id="menu-toggle-wallpaper">
+                <span class="dropdown-item-label">Tắt hình nền (giảm lag)</span>
+                <span class="dropdown-item-check hidden" data-wallpaper-check>✓</span>
+              </button>
+              <div class="dropdown-divider"></div>
               <button class="dropdown-item dropdown-item-danger" data-action="restart">Khởi động lại</button>
               <button class="dropdown-item dropdown-item-danger" data-action="shutdown">Tắt máy</button>
             </div>
@@ -110,7 +115,11 @@ export function renderSessionPage() {
               </button>
               <div class="dropdown-divider"></div>
               <button class="dropdown-item" data-view="fullscreen">Toàn màn hình</button>
-              <button class="dropdown-item" data-view="monitor">Chọn màn hình…</button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Màn hình của host</div>
+              <div class="dropdown-monitor-list" id="menu-view-monitors">
+                <div class="dropdown-item-empty">Chờ host gửi danh sách...</div>
+              </div>
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Chất lượng</div>
               <button class="dropdown-item" data-quality="auto">Tự động (theo mạng)</button>
@@ -275,47 +284,54 @@ function setupSessionEvents() {
     });
   });
 
-  // View menu — fullscreen + monitor + quality + display fit (consolidated)
-  document.querySelectorAll('#menu-view .dropdown-item').forEach((item) => {
-    item.addEventListener('click', () => {
-      const el = item as HTMLElement;
-      const view = el.dataset.view;
-      const quality = el.dataset.quality as QualityPreset | undefined;
-      const fit = el.dataset.fit as DisplayFit | undefined;
-      const mode = el.dataset.mode as 'control' | 'view' | undefined;
-      document.getElementById('menu-view')?.classList.add('hidden');
+  // View menu — fullscreen + monitor + quality + display fit (consolidated).
+  // Use event delegation on the menu itself so dynamically-rendered monitor
+  // buttons (added via updateMonitorMenu) trigger their click handler too.
+  document.getElementById('menu-view')?.addEventListener('click', (e) => {
+    const item = (e.target as HTMLElement).closest('.dropdown-item') as HTMLElement | null;
+    if (!item) return;
+    const view = item.dataset.view;
+    const quality = item.dataset.quality as QualityPreset | undefined;
+    const fit = item.dataset.fit as DisplayFit | undefined;
+    const mode = item.dataset.mode as 'control' | 'view' | undefined;
+    const monitorId = item.dataset.monitor;
+    document.getElementById('menu-view')?.classList.add('hidden');
 
-      if (mode) {
-        handleViewerModeChange(mode);
-      } else if (view === 'fullscreen') {
-        const wrapper = document.getElementById('video-wrapper');
-        if (wrapper) {
-          if (document.fullscreenElement) {
-            document.exitFullscreen();
-          } else {
-            wrapper.requestFullscreen();
-          }
-        }
-      } else if (view === 'monitor') {
-        showToast('Chọn màn hình: tính năng sẽ sớm có', 'info');
-      } else if (quality === ('auto' as any)) {
-        // Re-enable the adaptive controller so the viewer climbs/descends
-        // tiers based on observed network conditions instead of the user's
-        // last manual pick.
-        window.connectionManager?.setAdaptiveEnabled?.(true);
-        showToast('Đã bật chất lượng tự động', 'success');
-      } else if (quality) {
-        const ok = window.connectionManager?.requestQuality(quality);
-        if (ok === false) {
-          showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
+    if (mode) {
+      handleViewerModeChange(mode);
+    } else if (view === 'fullscreen') {
+      const wrapper = document.getElementById('video-wrapper');
+      if (wrapper) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
         } else {
-          showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
+          wrapper.requestFullscreen();
         }
-      } else if (fit) {
-        const video = document.getElementById('remote-video') as HTMLVideoElement | null;
-        if (video) video.style.objectFit = fit;
       }
-    });
+    } else if (monitorId) {
+      const ok = window.connectionManager?.requestMonitor(monitorId);
+      if (ok === false) {
+        showToast('Chưa kết nối — chưa thể đổi màn hình', 'info');
+      } else {
+        showToast('Đang đổi màn hình chia sẻ...', 'info');
+      }
+    } else if (quality === ('auto' as any)) {
+      // Re-enable the adaptive controller so the viewer climbs/descends
+      // tiers based on observed network conditions instead of the user's
+      // last manual pick.
+      window.connectionManager?.setAdaptiveEnabled?.(true);
+      showToast('Đã bật chất lượng tự động', 'success');
+    } else if (quality) {
+      const ok = window.connectionManager?.requestQuality(quality);
+      if (ok === false) {
+        showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
+      } else {
+        showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
+      }
+    } else if (fit) {
+      const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+      if (video) video.style.objectFit = fit;
+    }
   });
 
   // Communicate menu — chat
@@ -692,11 +708,68 @@ export function updateRemoteControlLock(locked: boolean): void {
 }
 
 /**
+ * Viewer-side: track whether we've asked the host to hide its wallpaper.
+ * Used to flip between hide-wallpaper / restore-wallpaper actions and
+ * keep the menu checkmark in sync. Reset on disconnect/exit.
+ */
+let wallpaperHiddenOnHost = false;
+
+export function resetWallpaperToggleUI(): void {
+  wallpaperHiddenOnHost = false;
+  document.querySelector('[data-wallpaper-check]')?.classList.add('hidden');
+}
+
+/**
+ * Called from ConnectionManager when the host reports the result of a
+ * hide-wallpaper / restore-wallpaper action. Rolls the optimistic local
+ * state back if the host failed, so the menu checkmark stays honest.
+ */
+export function onWallpaperResult(action: string, success: boolean, error?: string): void {
+  if (!success) {
+    // Roll back to whatever the host's actual state is. We optimistically
+    // flipped on send, so undo that flip here.
+    if (action === 'hide-wallpaper') wallpaperHiddenOnHost = false;
+    else if (action === 'restore-wallpaper') wallpaperHiddenOnHost = true;
+    document
+      .querySelector('[data-wallpaper-check]')
+      ?.classList.toggle('hidden', !wallpaperHiddenOnHost);
+    showToast(`Không thể đổi hình nền: ${error || 'lỗi không rõ'}`, 'error');
+    return;
+  }
+  showToast(
+    action === 'hide-wallpaper' ? 'Đã tắt hình nền máy đối tác' : 'Đã bật lại hình nền máy đối tác',
+    'success',
+  );
+}
+
+/**
  * Send a remote system action to the host. Destructive ones (sign-out,
  * restart, shutdown) ask for explicit confirmation first because they
  * cannot be undone — once the host disconnects, you've lost the session.
  */
 function runRemoteAction(action: string): void {
+  // Wallpaper toggle is virtual — flips between hide/restore based on the
+  // local mirror, then sends the resolved action down to the host.
+  if (action === 'toggle-wallpaper') {
+    const target = wallpaperHiddenOnHost ? 'restore-wallpaper' : 'hide-wallpaper';
+    const sent = window.connectionManager?.sendRemoteAction(target);
+    if (sent === false) {
+      showToast('Chưa kết nối — không thể gửi lệnh', 'error');
+    } else {
+      // Optimistic flip; the host's result message is the source of truth
+      // (handleRemoteActionResult will roll back on failure).
+      wallpaperHiddenOnHost = !wallpaperHiddenOnHost;
+      document
+        .querySelector('[data-wallpaper-check]')
+        ?.classList.toggle('hidden', !wallpaperHiddenOnHost);
+      showToast(
+        wallpaperHiddenOnHost ? 'Đã yêu cầu tắt hình nền' : 'Đã yêu cầu bật lại hình nền',
+        'info',
+      );
+    }
+    return;
+  }
+
   const labels: Record<string, string> = {
     'ctrl-alt-del': 'gửi Ctrl+Alt+Del',
     'lock': 'khóa máy đối tác',
@@ -1073,6 +1146,60 @@ export function updateHostViewerMode(viewerId: string, mode: 'control' | 'view')
   if (!entry) return;
   entry.mode = mode;
   renderHostViewers();
+}
+
+/**
+ * Render the host's monitor list inside the View menu so the viewer can
+ * pick which display to share. Called by ConnectionManager whenever the
+ * host pushes a 'monitor-list' system message.
+ *
+ * Hides the section entirely when the host has only one monitor — picking
+ * "the one screen" is meaningless and just clutters the menu.
+ */
+export function updateMonitorMenu(
+  monitors: Array<{ id: string; name: string; isPrimary: boolean }>,
+  activeSourceId: string | null,
+): void {
+  const container = document.getElementById('menu-view-monitors');
+  if (!container) return;
+  const sectionLabel = container.previousElementSibling as HTMLElement | null;
+  const dividerAfter = container.nextElementSibling as HTMLElement | null;
+
+  // Single-monitor host — no point showing a picker. Hide the whole section
+  // including the section label above it and the divider below.
+  if (monitors.length <= 1) {
+    container.classList.add('hidden');
+    if (sectionLabel?.classList.contains('dropdown-section-label')) {
+      sectionLabel.classList.add('hidden');
+    }
+    if (dividerAfter?.classList.contains('dropdown-divider')) {
+      dividerAfter.classList.add('hidden');
+    }
+    return;
+  }
+
+  container.classList.remove('hidden');
+  sectionLabel?.classList.remove('hidden');
+  dividerAfter?.classList.remove('hidden');
+
+  container.innerHTML = monitors
+    .map((m, idx) => {
+      const isActive = activeSourceId
+        ? m.id === activeSourceId
+        : m.isPrimary;
+      const label = m.isPrimary
+        ? `${m.name || `Màn hình ${idx + 1}`} (chính)`
+        : m.name || `Màn hình ${idx + 1}`;
+      const check = isActive
+        ? '<span class="dropdown-item-check">✓</span>'
+        : '<span class="dropdown-item-check hidden">✓</span>';
+      return `
+        <button class="dropdown-item dropdown-item-toggle" data-monitor="${escapeHtml(m.id)}">
+          <span class="dropdown-item-label">${escapeHtml(label)}</span>
+          ${check}
+        </button>`;
+    })
+    .join('');
 }
 
 /**

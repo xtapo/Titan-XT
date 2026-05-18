@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
     getSources: () => ipcRenderer.invoke('screen:getSources'),
     getMonitorInfo: (monitorId: string) => ipcRenderer.invoke('screen:getMonitorInfo', monitorId),
     getPrimaryDisplay: () => ipcRenderer.invoke('screen:getPrimaryDisplay'),
+    selectSource: (sourceId: string | null) => ipcRenderer.invoke('screen:selectSource', sourceId),
+    getSelectedSource: () => ipcRenderer.invoke('screen:getSelectedSource') as Promise<string | null>,
   },
 
   // === Input Simulation ===

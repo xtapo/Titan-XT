@@ -22,6 +22,7 @@ export interface PeerCallbacks {
   onDataMessage?: (channel: string, data: any) => void;
   onStateChange?: (state: ConnectionState) => void;
   onStatsUpdate?: (stats: PeerStats) => void;
+  onChannelOpen?: (channel: string) => void;
 }
 
 export interface PeerStats {
@@ -223,6 +224,49 @@ export class PeerConnection {
   }
 
   /**
+   * Swap the video track on the existing sender without re-negotiating.
+   *
+   * Used when the host changes which monitor is being shared — we keep the
+   * same RTCRtpSender (and therefore the same SSRC + DTLS state) and just
+   * point it at a fresh capture track. The viewer's `<video>` element keeps
+   * playing without a black flash; only the picture changes.
+   *
+   * The old track is stopped so the OS releases the previous monitor and the
+   * encoder doesn't keep two captures alive in parallel.
+   */
+  async replaceVideoTrack(newStream: MediaStream): Promise<boolean> {
+    const newTrack = newStream.getVideoTracks()[0];
+    if (!newTrack) return false;
+
+    try {
+      (newTrack as any).contentHint = 'detail';
+    } catch {
+      // contentHint not supported — ignore
+    }
+
+    const videoSender = this.pc.getSenders().find((s) => s.track?.kind === 'video');
+    if (!videoSender) {
+      // No prior sender — fall through to addStream so the first call still works.
+      this.addStream(newStream);
+      return true;
+    }
+
+    const oldTrack = videoSender.track;
+    try {
+      await videoSender.replaceTrack(newTrack);
+    } catch (err) {
+      console.error('[WebRTC] replaceTrack failed:', err);
+      return false;
+    }
+    // Stop the previous capture so the OS frees the old monitor's source and
+    // we don't end up with two desktopCapturer sessions running in parallel.
+    if (oldTrack && oldTrack !== newTrack) {
+      try { oldTrack.stop(); } catch { /* ignore */ }
+    }
+    return true;
+  }
+
+  /**
    * Set bitrate caps + initial bitrate on the video sender.
    * Without this, WebRTC starts ~300kbps and ramps slowly — unusable for 1080p screen share.
    *
@@ -377,6 +421,7 @@ export class PeerConnection {
 
     channel.onopen = () => {
       console.log(`[WebRTC] Channel open: ${channel.label}`);
+      this.callbacks.onChannelOpen?.(channel.label);
     };
 
     channel.onclose = () => {

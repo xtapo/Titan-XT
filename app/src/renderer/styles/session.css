@@ -318,6 +318,23 @@
   margin-left: 4px;
 }
 
+/* Placeholder shown inside the monitor picker before the host pushes its
+   list. Same look as a disabled menu entry so it reads as "info, not action". */
+.session-toolbar .dropdown-item-empty {
+  padding: 7px 12px;
+  font-size: 11px;
+  color: #8a93a3;
+  font-style: italic;
+}
+
+/* Section wrapper for the dynamically-rendered monitor buttons. Hidden by
+   updateMonitorMenu() when the host has only one display. */
+.session-toolbar .dropdown-monitor-list.hidden,
+.session-toolbar .dropdown-section-label.hidden,
+.session-toolbar .dropdown-divider.hidden {
+  display: none;
+}
+
 /* Persistent banner shown to the viewer while host has locked control.
    Sits below the toolbar so it doesn't overlap the partner name when the
    toolbar is expanded. */

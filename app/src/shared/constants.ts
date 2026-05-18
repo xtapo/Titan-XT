@@ -17,12 +17,17 @@ export const ICE_SERVERS: any[] = [
 
 // Screen capture
 export const DEFAULT_FPS = 30;
-export const DEFAULT_MAX_WIDTH = 1920;
-export const DEFAULT_MAX_HEIGHT = 1080;
+// Cap capture at native 4K so the highest preset can deliver a true UHD stream
+// without the OS-side downscale that 1920×1080 would force. Lower presets pull
+// resolution back down via per-track applyConstraints().
+export const DEFAULT_MAX_WIDTH = 3840;
+export const DEFAULT_MAX_HEIGHT = 2160;
 
 // Video encoder
-export const VIDEO_MAX_BITRATE = 8_000_000; // 8 Mbps — headroom for 1080p screen share with motion
-export const VIDEO_START_BITRATE = 4_000_000;
+// 30 Mbps ceiling — enough headroom for a 4K @ 30fps screen share with motion.
+// Lower presets clamp themselves below this via QUALITY_PROFILES.maxBitrate.
+export const VIDEO_MAX_BITRATE = 30_000_000;
+export const VIDEO_START_BITRATE = 6_000_000;
 // Prefer H.264 first — hardware-accelerated on virtually every modern GPU
 // (NVENC / QuickSync / AMF) which keeps encode latency low and CPU free.
 // VP8/VP9 are software-only on most Windows builds of Chromium.
@@ -37,7 +42,7 @@ export const ADAPTIVE_SAMPLE_INTERVAL_MS = 2_000;
 export const ADAPTIVE_DEBOUNCE_SAMPLES = 3;   // require N consecutive samples before changing tier
 
 // Quality presets — viewer picks one, host re-applies sender params + capture constraints
-export type QualityPreset = 'high' | 'medium' | 'low';
+export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low';
 
 export interface QualityProfile {
   label: string;
@@ -48,6 +53,20 @@ export interface QualityProfile {
 }
 
 export const QUALITY_PROFILES: Record<QualityPreset, QualityProfile> = {
+  max: {
+    label: 'Tối đa (4K · 25 Mbps · 30fps)',
+    maxWidth: 3840,
+    maxHeight: 2160,
+    maxBitrate: 25_000_000,
+    maxFramerate: 30,
+  },
+  ultra: {
+    label: 'Siêu nét (1440p · 12 Mbps · 30fps)',
+    maxWidth: 2560,
+    maxHeight: 1440,
+    maxBitrate: 12_000_000,
+    maxFramerate: 30,
+  },
   high: {
     label: 'Cao (1080p · 6 Mbps · 30fps)',
     maxWidth: 1920,

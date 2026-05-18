@@ -6,6 +6,11 @@ import { MonitorInfo } from '../shared/types';
  * Supports multi-monitor selection
  */
 
+// Currently-selected desktop source id. Updated whenever the viewer requests
+// a monitor switch; consumed the next time the renderer calls getDisplayMedia.
+// `null` means "let the handler pick the primary screen".
+let selectedSourceId: string | null = null;
+
 /**
  * Get all available screen sources with thumbnails
  */
@@ -47,9 +52,15 @@ export function setupScreenCapture(): void {
           callback({});
           return;
         }
-        // Default to primary screen; renderer can later request a specific monitor
-        // by selecting via UI and re-invoking getDisplayMedia.
-        callback({ video: sources[0], audio: 'loopback' });
+        // If the viewer asked for a specific monitor, honor it. Otherwise default
+        // to the primary screen (first source). The renderer re-invokes
+        // getDisplayMedia after a monitor switch via PeerConnection.replaceVideoTrack.
+        let chosen = sources[0];
+        if (selectedSourceId) {
+          const match = sources.find((s) => s.id === selectedSourceId);
+          if (match) chosen = match;
+        }
+        callback({ video: chosen, audio: 'loopback' });
       } catch (err) {
         console.error('[Screen] Display media handler error:', err);
         callback({});
@@ -66,6 +77,18 @@ export function setupScreenCapture(): void {
       console.error('[Screen] Error getting sources:', err);
       return [];
     }
+  });
+
+  // Select which source the next getDisplayMedia call should bind to. The
+  // renderer first calls this, then re-invokes getDisplayMedia and pipes the
+  // resulting track into the existing peer connection via replaceTrack.
+  ipcMain.handle('screen:selectSource', (_event, sourceId: string | null) => {
+    selectedSourceId = typeof sourceId === 'string' && sourceId.length > 0 ? sourceId : null;
+    return { success: true, sourceId: selectedSourceId };
+  });
+
+  ipcMain.handle('screen:getSelectedSource', () => {
+    return selectedSourceId;
   });
 
   // Get specific monitor info

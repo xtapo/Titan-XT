@@ -84,7 +84,9 @@ export type RemoteActionId =
   | 'signout'
   | 'restart'
   | 'shutdown'
-  | 'task-manager';
+  | 'task-manager'
+  | 'hide-wallpaper'
+  | 'restore-wallpaper';
 
 export interface SystemMessage {
   type: 'system';
@@ -98,7 +100,9 @@ export interface SystemMessage {
     | 'remote-action'
     | 'remote-action-result'
     | 'mode-change'
-    | 'control-lock';
+    | 'control-lock'
+    | 'switch-monitor'
+    | 'monitor-list';
   data: any;
 }
 
