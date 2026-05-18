@@ -1,13 +1,12 @@
-# Build Titan-XT installer + auto-publish to GitHub Releases.
+# Build Titan-XT installers + auto-publish to GitHub Releases.
 #
-# Trigger: push a version tag like v1.0.0. The job syncs app/package.json
-# `version` with the tag, builds the Windows installer, and lets
-# electron-builder publish to a GitHub Release of that tag.
+# Trigger: push a version tag like v1.0.0. Each job syncs app/package.json
+# `version` with the tag, builds for its OS, and lets electron-builder
+# publish to a GitHub Release of that tag.
 #
-# Mac/Linux: not built here. Mac requires a code-signing cert (otherwise
-# the .app is "damaged" warning); Linux rpm/snap targets need extra system
-# packages on the runner. Add them back when those secrets / targets are
-# actually needed.
+# macOS: built unsigned. End-users will see Gatekeeper warnings until a
+# Developer ID cert is wired up via CSC_LINK / CSC_KEY_PASSWORD secrets.
+# Linux: not built here yet — add a job when there's demand.
 
 name: Release
 
@@ -55,3 +54,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:win
+
+  macos:
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Sync version with tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "Setting version to $version"
+          npm version "$version" --no-git-tag-version --allow-same-version
+
+      - run: npm ci
+
+      # Unsigned build. CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder
+      # from attempting to look up a missing keychain identity (which fails the
+      # job). Set CSC_LINK + CSC_KEY_PASSWORD repo secrets to enable signing.
+      - name: Build + publish (macOS)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run release:mac
