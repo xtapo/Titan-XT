@@ -36,6 +36,7 @@ Phần mềm hỗ trợ điều khiển máy tính từ xa. Xây dựng trên El
 | Cộng tác | Chat tích hợp, kéo-thả truyền file hai chiều, khay điều khiển nổi (UltraViewer-style) |
 | Hệ thống | Tự khởi động cùng Windows, chạy nền dưới dạng tray icon, lệnh restart/shutdown/đăng xuất từ xa |
 | Hiệu năng | WebRTC P2P (không qua server khi đã handshake xong), tự ẩn hình nền khi chia sẻ màn hình |
+| Mobile viewer | PWA chạy trên trình duyệt điện thoại — điều khiển host qua cử chỉ touch, xem [web-viewer/README.md](web-viewer/README.md) |
 | Auto-update | Tự kiểm tra GitHub Releases, tải & cài đặt ngay trong app |
 | UI | Giao diện tối, sổ địa chỉ "Máy của tôi", lịch sử kết nối |
 
@@ -87,6 +88,8 @@ Titan-XT/
 │   ├── src/service/        Background supervisor (Windows scheduled task)
 │   ├── src/worker/         SYSTEM-level worker cho input simulation
 │   └── src/shared/         Protocol & types dùng chung
+├── web-viewer/             PWA viewer chạy trên browser (mobile / iPad / desktop)
+│   └── src/                Vite + TypeScript, dùng cùng signal server
 ├── server/                 Signal server: Node.js + Socket.io
 │   └── src/                Registry (machine ↔ socket) + Signaling rooms
 └── .github/workflows/      CI build & publish release
