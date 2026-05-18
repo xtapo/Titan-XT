@@ -7,6 +7,7 @@ import { renderHomePage, resetConnectForm } from './pages/home';
 import { renderSessionPage } from './pages/session';
 import { renderAddressBookPage } from './pages/address-book';
 import { showToast } from './components/toast';
+import { initUpdateBanner } from './components/update-banner';
 import { ConnectionManager } from './lib/connection';
 
 declare global {
@@ -93,6 +94,17 @@ async function init() {
   connectionManager = new ConnectionManager();
   window.connectionManager = connectionManager;
 
+  // When the user clicks X (window hides to tray), tear down any live
+  // session so the partner doesn't keep "Đang điều khiển" / chat panel
+  // up against an app the user thinks they closed.
+  window.titanAPI?.on?.('app:before-hide', () => {
+    try {
+      connectionManager?.disconnect();
+    } catch (e) {
+      console.warn('[Main] disconnect on hide failed:', e);
+    }
+  });
+
   // Connect to signal server
   try {
     const identity = await window.titanAPI?.identity?.get();
@@ -114,6 +126,10 @@ async function init() {
 
   // Pre-render session page structure
   renderSessionPage();
+
+  // Wire up auto-update banner — listens for status events from the main
+  // process and renders the upgrade prompt at the top of the home page.
+  initUpdateBanner();
 
   console.log('[Titan-XT] Renderer ready.');
 }

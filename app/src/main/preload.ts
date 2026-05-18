@@ -109,6 +109,16 @@ contextBridge.exposeInMainWorld('titanAPI', {
     getInfo: () => ipcRenderer.invoke('app:getInfo'),
   },
 
+  // === Auto Update ===
+  updater: {
+    check: () => ipcRenderer.invoke('updater:check'),
+    download: () => ipcRenderer.invoke('updater:download'),
+    install: () => ipcRenderer.invoke('updater:install'),
+    onStatus: (cb: (status: any) => void) => {
+      ipcRenderer.on('updater:status', (_e, status) => cb(status));
+    },
+  },
+
   // === Connection Events (Main → Renderer) ===
   on: (channel: string, callback: (...args: any[]) => void) => {
     const validChannels = [
@@ -118,6 +128,7 @@ contextBridge.exposeInMainWorld('titanAPI', {
       'connect:error',
       'session:ended',
       'signal:received',
+      'app:before-hide',
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, (_event, ...args) => callback(...args));

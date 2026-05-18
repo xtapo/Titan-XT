@@ -10,6 +10,7 @@ import { setupFileTransfer } from './file-transfer';
 import { setupSystemActions } from './system-actions';
 import { setupRecording, closeAllRecordings } from './recording';
 import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper';
+import { setupUpdater, checkForUpdatesWithDialog } from './updater';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -100,10 +101,13 @@ function createMainWindow(): void {
     console.error('[Main] render-process-gone:', details);
   });
 
-  // Minimize to tray instead of close
+  // Minimize to tray instead of close — but tear down any active remote
+  // session first so the partner doesn't keep "Đang điều khiển" / chat panel
+  // up against a window the user thinks they closed.
   mainWindow.on('close', (event) => {
     if (tray) {
       event.preventDefault();
+      mainWindow?.webContents.send('app:before-hide');
       mainWindow?.hide();
     }
   });
@@ -135,6 +139,14 @@ function createTray(): void {
     {
       label: 'Mở Titan-XT',
       click: () => mainWindow?.show(),
+    },
+    {
+      label: 'Kiểm tra cập nhật...',
+      click: () => {
+        checkForUpdatesWithDialog().catch((err) => {
+          console.warn('[Tray] check for updates failed:', err);
+        });
+      },
     },
     { type: 'separator' },
     {
@@ -245,6 +257,7 @@ export function startAgent(): void {
     setupSystemActions();
     setupRecording();
     setupWallpaper();
+    setupUpdater(() => mainWindow);
     // If the previous run crashed mid-session, the user's wallpaper is still
     // blanked. Put it back before the window even shows up.
     restoreOnStartup().catch((err) => {
