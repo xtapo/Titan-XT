@@ -9,11 +9,23 @@ import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater';
 let mainWindowGetter: (() => BrowserWindow | null) | null = null;
 let downloadingUpdate = false;
 let updateDownloaded = false;
+// Tracks whether the in-flight check was triggered by the user via the tray
+// menu / IPC (vs the silent post-launch check). Manual checks need explicit
+// feedback when the result is "up-to-date" — otherwise the user sees nothing.
+let manualCheckPending = false;
 
 function send(channel: string, payload?: unknown): void {
   const win = mainWindowGetter?.();
   if (!win || win.isDestroyed()) return;
   win.webContents.send(channel, payload);
+}
+
+function showAndFocusWindow(): void {
+  const win = mainWindowGetter?.();
+  if (!win || win.isDestroyed()) return;
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
 }
 
 export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
@@ -31,6 +43,10 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
   });
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
+    // Available result handles itself via the banner — clear the manual flag
+    // so we don't also pop a redundant dialog.
+    manualCheckPending = false;
+    showAndFocusWindow();
     send('updater:status', {
       state: 'available',
       version: info.version,
@@ -41,6 +57,15 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
 
   autoUpdater.on('update-not-available', (info: UpdateInfo) => {
     send('updater:status', { state: 'up-to-date', version: info.version });
+    if (manualCheckPending) {
+      manualCheckPending = false;
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Cập nhật',
+        message: 'Bạn đang dùng phiên bản mới nhất.',
+        detail: `Phiên bản hiện tại: ${app.getVersion()}`,
+      });
+    }
   });
 
   autoUpdater.on('download-progress', (p: ProgressInfo) => {
@@ -63,6 +88,10 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
     downloadingUpdate = false;
     console.warn('[Updater] error:', err.message);
     send('updater:status', { state: 'error', message: err.message });
+    if (manualCheckPending) {
+      manualCheckPending = false;
+      dialog.showErrorBox('Cập nhật', err.message || 'Lỗi không xác định khi kiểm tra cập nhật.');
+    }
   });
 
   ipcMain.handle('updater:check', async () => {
@@ -113,23 +142,32 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
 }
 
 /**
- * Optional fallback used by the tray "Kiểm tra cập nhật" entry — shows a
- * native dialog when no main window is available to render UI.
+ * Tray "Kiểm tra cập nhật..." entry. Always shows feedback to the user — a
+ * native dialog when there's nothing to install (since the banner only
+ * surfaces actionable states).
  */
 export async function checkForUpdatesWithDialog(): Promise<void> {
   if (!app.isPackaged) {
     dialog.showMessageBox({
       type: 'info',
+      title: 'Cập nhật',
       message: 'Auto-update chỉ hoạt động trong bản đã đóng gói.',
     });
     return;
   }
+  manualCheckPending = true;
   try {
     const result = await autoUpdater.checkForUpdates();
     if (!result) {
-      dialog.showMessageBox({ type: 'info', message: 'Không thể kiểm tra cập nhật.' });
+      manualCheckPending = false;
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Cập nhật',
+        message: 'Không thể kiểm tra cập nhật ngay bây giờ.',
+      });
     }
   } catch (err) {
+    manualCheckPending = false;
     dialog.showErrorBox('Cập nhật', (err as Error).message);
   }
 }
