@@ -60,7 +60,14 @@ export function setupScreenCapture(): void {
           const match = sources.find((s) => s.id === selectedSourceId);
           if (match) chosen = match;
         }
-        callback({ video: chosen, audio: 'loopback' });
+        // `audio: 'loopback'` is Windows-only in Electron. macOS has no system
+        // loopback API exposed through getDisplayMedia, so we ship video-only
+        // there. Linux behaves like Windows for the loopback string.
+        if (process.platform === 'darwin') {
+          callback({ video: chosen });
+        } else {
+          callback({ video: chosen, audio: 'loopback' });
+        }
       } catch (err) {
         console.error('[Screen] Display media handler error:', err);
         callback({});

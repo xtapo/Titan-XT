@@ -9,7 +9,10 @@
     "dev:app": "cd app && npm run dev",
     "build:server": "cd server && npm run build",
     "build:app": "cd app && npm run build",
-    "package:app": "cd app && npm run package"
+    "package:app": "cd app && npm run package",
+    "package:app:win": "cd app && npm run package:win",
+    "package:app:mac": "cd app && npm run package:mac",
+    "package:app:linux": "cd app && npm run package:linux"
   },
   "author": "Titan-XT Team",
   "license": "MIT"

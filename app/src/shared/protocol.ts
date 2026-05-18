@@ -102,7 +102,8 @@ export interface SystemMessage {
     | 'mode-change'
     | 'control-lock'
     | 'switch-monitor'
-    | 'monitor-list';
+    | 'monitor-list'
+    | 'request-monitors';
   data: any;
 }
 

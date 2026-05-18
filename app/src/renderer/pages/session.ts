@@ -466,7 +466,14 @@ function setupGroupDropdown(rootId: string, triggerId: string, menuId: string) {
     document.querySelectorAll('.session-toolbar .dropdown-menu').forEach((m) => {
       if (m.id !== menuId) m.classList.add('hidden');
     });
+    const willOpen = menu.classList.contains('hidden');
     menu.classList.toggle('hidden');
+    // Refresh the host's monitor list whenever the View menu opens so the
+    // picker reflects plug/unplug events that happened after connect, and
+    // as a safety-net for any initial request that was lost on the wire.
+    if (willOpen && menuId === 'menu-view') {
+      window.connectionManager?.requestMonitorList?.();
+    }
   });
 
   document.addEventListener('click', (e) => {

@@ -41,9 +41,52 @@ npm run dev
 # Build signal server
 cd server && npm run build
 
-# Build & package Electron app (.exe)
-cd app && npm run package:win
+# Build & package Electron app
+cd app
+npm run package:win     # Windows: NSIS + Portable + ZIP
+npm run package:mac     # macOS:   DMG + ZIP (Universal: x64 + arm64)
+npm run package:linux   # Linux:   AppImage + .deb + .rpm
 ```
+
+### Build trên macOS
+
+> Chỉ build được app `.dmg / .zip` cho macOS khi chạy **trên macOS**
+> (yêu cầu của Apple — `codesign`, `dmg-builder`, …).
+> Trên Windows / Linux chỉ tạo được app cho hệ tương ứng.
+
+Trước khi build, đảm bảo:
+
+1. macOS 12+ với Xcode Command Line Tools (`xcode-select --install`).
+2. Node.js 20+ và Python 3 (cần để build native module `koffi`).
+3. Nếu phân phối ra ngoài: chứng chỉ Apple Developer ID (xem dưới).
+
+Lần đầu chạy app sẽ xin các quyền:
+
+| Quyền | Dùng để | System Settings → |
+|------|---------|-------------------|
+| Screen Recording | Chia sẻ màn hình tới kỹ thuật viên | Privacy & Security → Screen Recording |
+| Accessibility | Mô phỏng chuột/bàn phím từ xa | Privacy & Security → Accessibility |
+| Automation | Lệnh restart / shutdown / logout | Privacy & Security → Automation |
+| Microphone (tuỳ) | Truyền âm thanh trong phiên hỗ trợ | Privacy & Security → Microphone |
+
+Cấp xong cần khởi động lại Titan-XT.
+
+### Code-signing & Notarization (tuỳ chọn)
+
+Để người dùng không gặp cảnh báo "App is damaged" khi mở:
+
+```bash
+export APPLE_ID="you@example.com"
+export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+export APPLE_TEAM_ID="ABCDE12345"
+export CSC_LINK="/path/to/DeveloperID.p12"
+export CSC_KEY_PASSWORD="..."
+
+cd app && npm run release:mac     # build + ký + notarize + publish lên GitHub
+```
+
+Không có chứng chỉ vẫn build được nhưng app sẽ chỉ chạy được khi
+"Allow Anyway" trong System Settings → Privacy & Security.
 
 ## Kiến trúc
 

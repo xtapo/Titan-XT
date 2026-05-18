@@ -308,15 +308,6 @@ export class ConnectionManager {
           this.handleSystemMessage(data);
         }
       },
-      onChannelOpen: (channel) => {
-        // Once the system channel is open, push the host's monitor list to
-        // the viewer so the View menu can render the picker immediately.
-        if (channel === CHANNEL_SYSTEM && this.role === 'host') {
-          this.pushMonitorListToViewer().catch((err: unknown) =>
-            console.warn('[Conn] pushMonitorListToViewer failed:', err),
-          );
-        }
-      },
       onStateChange: (state) => {
         console.log('[Conn] Host peer state:', state);
         // Viewer dropped (disconnect, network loss, app close) — tear the
@@ -349,8 +340,13 @@ export class ConnectionManager {
       // pixels available when the viewer asks for 4K. Lower presets clamp the
       // track via applyConstraints() in webrtc.ts, so this max isn't binding
       // when 'high'/'medium'/'low' are picked.
+      //
+      // audio: true asks the main-process display-media handler for the system
+      // loopback track ('audio: loopback' on Windows/Linux). macOS has no
+      // loopback API exposed through getDisplayMedia, so the handler returns
+      // video-only there and the audio request is silently ignored.
       const sources = await navigator.mediaDevices.getDisplayMedia({
-        audio: false,
+        audio: true,
         video: {
           width: { max: DEFAULT_MAX_WIDTH },
           height: { max: DEFAULT_MAX_HEIGHT },
@@ -399,6 +395,18 @@ export class ConnectionManager {
           this.handleFileMessage(data);
         } else if (channel === CHANNEL_SYSTEM) {
           this.handleSystemMessage(data);
+        }
+      },
+      onChannelOpen: (channel) => {
+        // Once the system channel is open on this side, ask the host for its
+        // current monitor list. Doing it as a request avoids the race where
+        // the host's push lands before the viewer's onmessage is wired up.
+        if (channel === CHANNEL_SYSTEM && this.role === 'viewer') {
+          this.peer?.send(CHANNEL_SYSTEM, {
+            type: 'system',
+            action: 'request-monitors',
+            data: {},
+          });
         }
       },
       onStateChange: (state) => {
@@ -806,6 +814,22 @@ export class ConnectionManager {
   }
 
   /**
+   * Viewer-side: ping the host for its current monitor list. Called when
+   * the View menu opens so the picker reflects any plug/unplug since the
+   * initial request, and as a safety-net if the initial request was lost.
+   */
+  requestMonitorList(): boolean {
+    if (this.role !== 'viewer') return false;
+    return (
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'request-monitors',
+        data: {},
+      }) ?? false
+    );
+  }
+
+  /**
    * Host-side: gather the current monitor list (id + name + primary flag,
    * stripped of thumbnails to keep the system message small) and push it to
    * the viewer. Called when the system channel first opens and every time
@@ -1033,6 +1057,18 @@ export class ConnectionManager {
         if (this.role === 'host') {
           this.handleMonitorSwitch(msg.data?.sourceId).catch((err) =>
             console.warn('[Conn] handleMonitorSwitch failed:', err),
+          );
+        }
+        break;
+
+      case 'request-monitors':
+        // Viewer asked for the current monitor list (sent on system-channel
+        // open). Reply with monitor-list. This is the request/response form;
+        // it dodges the race where a host-initiated push lands before the
+        // viewer's onmessage is wired up.
+        if (this.role === 'host') {
+          this.pushMonitorListToViewer().catch((err: unknown) =>
+            console.warn('[Conn] pushMonitorListToViewer failed:', err),
           );
         }
         break;
