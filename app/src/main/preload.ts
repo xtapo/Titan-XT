@@ -22,8 +22,22 @@ contextBridge.exposeInMainWorld('titanAPI', {
   identity: {
     get: () => ipcRenderer.invoke('identity:get'),
     regeneratePassword: () => ipcRenderer.invoke('identity:regeneratePassword'),
-    verifyPassword: (passwordHash: string, nonce: string) =>
-      ipcRenderer.invoke('identity:verifyPassword', passwordHash, nonce),
+    verifyPassword: (passwordHash: string, nonce: string, viewerId?: string) =>
+      ipcRenderer.invoke('identity:verifyPassword', passwordHash, nonce, viewerId),
+    setUnattendedPassword: (plain: string) =>
+      ipcRenderer.invoke('identity:setUnattendedPassword', plain) as Promise<{ success: boolean; error?: string }>,
+    clearUnattendedPassword: () =>
+      ipcRenderer.invoke('identity:clearUnattendedPassword') as Promise<{ success: boolean }>,
+    getUnattendedStatus: () =>
+      ipcRenderer.invoke('identity:getUnattendedStatus') as Promise<{ enabled: boolean; autoStart: boolean }>,
+  },
+
+  // === Auto-launch (Windows Run / macOS Login Items / Linux autostart) ===
+  autoLaunch: {
+    set: (enabled: boolean) =>
+      ipcRenderer.invoke('autolaunch:set', enabled) as Promise<{ success: boolean; error?: string }>,
+    get: () =>
+      ipcRenderer.invoke('autolaunch:get') as Promise<{ enabled: boolean; hidden: boolean }>,
   },
 
   // === Screen ===
@@ -56,8 +70,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
     selectFiles: () => ipcRenderer.invoke('file:selectFiles'),
     readChunk: (filePath: string, offset: number, chunkSize: number) =>
       ipcRenderer.invoke('file:readChunk', filePath, offset, chunkSize) as Promise<string | null>,
-    saveFile: (fileName: string, base64Data: string) =>
-      ipcRenderer.invoke('file:saveFile', fileName, base64Data),
+    saveFile: (fileName: string, base64Data: string, targetHint?: 'desktop') =>
+      ipcRenderer.invoke('file:saveFile', fileName, base64Data, targetHint),
     showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
   },
 
@@ -106,6 +120,15 @@ contextBridge.exposeInMainWorld('titanAPI', {
     restore: () => ipcRenderer.invoke('wallpaper:restore') as Promise<{ success: boolean; error?: string }>,
   },
 
+  // === Annotation (host-side overlay) ===
+  // Renderer (host role) hands incoming viewer strokes to main, which paints
+  // them on a transparent click-through window covering the shared monitor.
+  annotation: {
+    relay: (msg: any) => ipcRenderer.invoke('annotation:relay', msg),
+    setSource: (sourceId: string | null) => ipcRenderer.invoke('annotation:setSource', sourceId),
+    close: () => ipcRenderer.invoke('annotation:close'),
+  },
+
   // === App Info ===
   app: {
     getInfo: () => ipcRenderer.invoke('app:getInfo'),
@@ -148,5 +171,18 @@ contextBridge.exposeInMainWorld('titanAPI', {
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, ...args);
     }
+  },
+});
+
+/**
+ * Bridge consumed by the host-side annotation overlay window
+ * (resources/annotation-overlay.html). The overlay registers a stroke handler
+ * with `window.titanOverlay.onStroke(cb)` and we pipe every IPC `annotation:stroke`
+ * message into that callback. Lives on a separate global so the main app's
+ * titanAPI surface stays untouched in the overlay.
+ */
+contextBridge.exposeInMainWorld('titanOverlay', {
+  onStroke: (cb: (msg: any) => void) => {
+    ipcRenderer.on('annotation:stroke', (_e, msg) => cb(msg));
   },
 });

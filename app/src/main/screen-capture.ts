@@ -123,3 +123,12 @@ export function setupScreenCapture(): void {
     };
   });
 }
+
+/**
+ * Module-level accessor used by callers outside the IPC layer (e.g. the
+ * annotation overlay needs to know which monitor is being shared so it can
+ * dock its transparent window to the right display).
+ */
+export function getSelectedSourceId(): string | null {
+  return selectedSourceId;
+}

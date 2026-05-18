@@ -50,6 +50,142 @@
 
 .video-overlay.hidden { display: none; }
 
+/* Drop overlay shown over the remote video while the viewer is dragging a
+   file. Dropping while this is up sends the file to the host's Desktop. */
+.video-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(31, 78, 161, 0.32);
+  border: 3px dashed rgba(255, 255, 255, 0.85);
+  border-radius: 4px;
+  z-index: 30;
+  pointer-events: none;
+  animation: dialogPop 0.14s ease;
+}
+
+.video-drop-overlay.hidden { display: none; }
+
+.video-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 32px;
+  background: rgba(20, 28, 44, 0.85);
+  color: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+
+.video-drop-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.video-drop-sub {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* =========================================
+   ANNOTATION — viewer-side canvas + toolbar
+   =========================================
+   Sits above the video wrapper. The canvas is hidden until the viewer flips
+   "Bật chế độ vẽ" in the View menu, at which point it intercepts pointer
+   events so gestures draw instead of getting forwarded as remote input. */
+.annotation-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.annotation-canvas.hidden { display: none; }
+
+.annotation-toolbar {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: rgba(20, 28, 44, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  z-index: 24;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  user-select: none;
+}
+
+/* Hidden by default — only revealed when annotation mode flips on, the
+   .annotation-toolbar-active class kept in sync with controller.isActive. */
+.annotation-toolbar.hidden { display: none; }
+.annotation-toolbar.annotation-toolbar-active { display: flex; }
+
+.annotation-toolbar-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #e6ecf3;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.annotation-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.annotation-toolbar-btn-active {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.annotation-toolbar-color {
+  width: 18px;
+  height: 18px;
+  margin: 0 2px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.annotation-toolbar-color:hover {
+  transform: scale(1.12);
+  border-color: rgba(255, 255, 255, 0.85);
+}
+
+.annotation-toolbar-color-active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.annotation-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.16);
+  margin: 0 4px;
+}
+
+.annotation-toolbar-close:hover {
+  background: rgba(229, 57, 53, 0.85);
+  color: #ffffff;
+}
+
 .connecting-spinner {
   display: flex;
   flex-direction: column;
@@ -1109,4 +1245,45 @@ body.host-mode-collapsed .host-panel-body { display: none; }
   background: #3d6bb3;
   color: #ffffff;
   border-color: #3d6bb3;
+}
+
+/* Drop overlay shown when the host drags a file onto the mini panel.
+   Streams the file to the connected viewer's Desktop. */
+.host-panel-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(31, 78, 161, 0.55);
+  border: 2px dashed rgba(255, 255, 255, 0.9);
+  border-radius: 6px;
+  z-index: 40;
+  pointer-events: none;
+  animation: dialogPop 0.12s ease;
+}
+
+.host-panel-drop-overlay.hidden { display: none; }
+
+.host-panel-drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 18px;
+  background: rgba(20, 28, 44, 0.9);
+  color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  text-align: center;
+}
+
+.host-panel-drop-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.host-panel-drop-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.78);
 }

@@ -5,12 +5,13 @@ import { APP_NAME } from '../shared/constants';
 import { setupIdentity } from './identity';
 import { setupStore } from './store';
 import { setupInputSimulator } from './input-simulator';
-import { setupScreenCapture } from './screen-capture';
+import { setupScreenCapture, getSelectedSourceId } from './screen-capture';
 import { setupFileTransfer } from './file-transfer';
 import { setupSystemActions } from './system-actions';
 import { setupRecording, closeAllRecordings } from './recording';
 import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper';
 import { setupUpdater, checkForUpdatesWithDialog } from './updater';
+import { setupAnnotation, closeAnnotationOverlay } from './annotation';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -48,7 +49,7 @@ function applyHostBounds(collapsed: boolean): void {
 }
 
 // === Window Creation ===
-function createMainWindow(): void {
+function createMainWindow(startHidden: boolean = false): void {
   mainWindow = new BrowserWindow({
     width: 850,
     height: 650,
@@ -83,12 +84,18 @@ function createMainWindow(): void {
   }
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    if (!startHidden) mainWindow?.show();
   });
 
-  // Fallback: force show after 3s in case ready-to-show never fires
+  // Fallback: force show after 3s in case ready-to-show never fires —
+  // skipped when launched hidden so unattended auto-start stays silent.
   setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+    if (
+      mainWindow &&
+      !mainWindow.isDestroyed() &&
+      !mainWindow.isVisible() &&
+      !startHidden
+    ) {
       console.warn('[Main] ready-to-show never fired — forcing show');
       mainWindow.show();
     }
@@ -179,6 +186,35 @@ function setupIPC(): void {
   });
   ipcMain.handle('window:close', () => mainWindow?.close());
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized());
+
+  // === Unattended auto-launch ===
+  // Register the binary in the OS auto-start hook (Login Items on macOS,
+  // Run registry key on Windows, ~/.config/autostart on Linux). We pass
+  // `--hidden` so the launched instance starts in tray-only mode and the
+  // user doesn't see a window pop up at every login.
+  ipcMain.handle('autolaunch:set', (_event, enabled: boolean) => {
+    try {
+      app.setLoginItemSettings({
+        openAtLogin: !!enabled,
+        openAsHidden: true,
+        args: enabled ? ['--hidden'] : [],
+        // path defaults to process.execPath which is what we want — the
+        // packaged exe / .app bundle, not Electron itself.
+      });
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('autolaunch:get', () => {
+    try {
+      const s = app.getLoginItemSettings();
+      return { enabled: !!s.openAtLogin, hidden: !!s.openAsHidden };
+    } catch {
+      return { enabled: false, hidden: false };
+    }
+  });
   ipcMain.handle('window:setHostMode', (_event, enable: boolean) => {
     if (!mainWindow) return;
     if (enable) {
@@ -258,13 +294,23 @@ export function startAgent(): void {
     setupRecording();
     setupWallpaper();
     setupUpdater(() => mainWindow);
+    setupAnnotation(() => getSelectedSourceId());
     // If the previous run crashed mid-session, the user's wallpaper is still
     // blanked. Put it back before the window even shows up.
     restoreOnStartup().catch((err) => {
       console.warn('[Main] wallpaper startup recovery failed:', err);
     });
 
-    createMainWindow();
+    // `--hidden` is added to argv when the auto-launch hook fires so the
+    // unattended host comes up tray-only and doesn't blink a window in the
+    // user's face at every login. Honor it from both argv and Electron's
+    // own login-item bookkeeping (wasOpenedAsHidden is true on macOS when
+    // launched via Login Items with the hidden flag).
+    const launchedHidden =
+      process.argv.includes('--hidden') ||
+      app.getLoginItemSettings().wasOpenedAsHidden;
+
+    createMainWindow(launchedHidden);
     createTray();
 
     console.log('');
@@ -298,5 +344,8 @@ export function startAgent(): void {
     restoreWallpaper().catch((err) => {
       console.warn('[Main] wallpaper restore on quit failed:', err);
     });
+    // Tear down the annotation overlay so it doesn't dangle as an orphan
+    // transparent window on the desktop.
+    closeAnnotationOverlay();
   });
 }

@@ -8,6 +8,7 @@ import {
   CHANNEL_CHAT,
   CHANNEL_FILE,
   CHANNEL_SYSTEM,
+  CHANNEL_ANNOTATION,
   VIDEO_MAX_BITRATE,
   VIDEO_START_BITRATE,
   PREFERRED_VIDEO_CODECS,
@@ -395,6 +396,12 @@ export class PeerConnection {
       { name: CHANNEL_CHAT, ordered: true },
       { name: CHANNEL_FILE, ordered: true, priority: 'low' },
       { name: CHANNEL_SYSTEM, ordered: true, priority: 'high' },
+      // Annotation: ordered (each stroke must arrive in sequence so the host
+      // overlay redraws the right path) but unreliable on point messages —
+      // a missing intermediate point shows up as a slight kink, not a
+      // permanent gap. Begin/end frames are infrequent enough that natural
+      // SCTP retransmits handle them.
+      { name: CHANNEL_ANNOTATION, ordered: true, priority: 'medium' },
     ];
 
     channels.forEach(({ name, ordered, maxRetransmits, priority }) => {

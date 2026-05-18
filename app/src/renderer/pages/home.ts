@@ -539,6 +539,33 @@ async function openSettingsModal() {
               <p class="field-hint">Giúp giảm băng thông và tăng độ mượt khi mạng yếu. Hình nền sẽ tự động phục hồi khi ngắt kết nối.</p>
             </div>
           </div>
+          <div class="settings-section">
+            <h3>Truy cập không giám sát</h3>
+            <p class="field-hint" style="margin-top:-4px;margin-bottom:12px">
+              Cho phép kỹ thuật viên kết nối bằng mật khẩu cố định khi không có ai ở máy này.
+              Mật khẩu chỉ lưu trên máy này và được mã hóa bằng khóa bảo mật của hệ điều hành.
+            </p>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-unattended-enabled" />
+                <span>Bật mật khẩu cố định cho truy cập không giám sát</span>
+              </label>
+            </div>
+            <div class="settings-field" id="settings-unattended-password-row" style="display:none">
+              <label class="field-label">Mật khẩu cố định (tối thiểu 6 ký tự)</label>
+              <input type="password" id="settings-unattended-password" class="input-field"
+                     placeholder="Để trống nếu giữ nguyên mật khẩu hiện tại"
+                     autocomplete="new-password" maxlength="64" />
+              <p class="field-hint" id="settings-unattended-status">Chưa đặt mật khẩu</p>
+            </div>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-unattended-autostart" />
+                <span>Tự khởi động Titan-XT (ẩn) khi bật máy</span>
+              </label>
+              <p class="field-hint">App sẽ chạy nền ở khay hệ thống mỗi khi đăng nhập Windows, không bật cửa sổ.</p>
+            </div>
+          </div>
         </div>
         <div class="settings-footer">
           <button class="btn-text" data-close>Hủy</button>
@@ -573,17 +600,63 @@ async function openSettingsModal() {
       const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
       const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
       const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+      const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
+      const unPassword = document.getElementById('settings-unattended-password') as HTMLInputElement;
+      const unAutoStart = document.getElementById('settings-unattended-autostart') as HTMLInputElement;
       try {
+        // Persist file/perf settings first.
         await window.titanAPI?.settings?.update({
           downloadFolder: folderInput?.value || '',
           askBeforeSave: !!askInput?.checked,
           hideWallpaper: !!hideWpInput?.checked,
+          unattendedAutoStart: !!unAutoStart?.checked,
         });
+
+        // Apply unattended password changes. Saving is one of three paths:
+        //   • toggle off  → wipe the stored password regardless of input value
+        //   • toggle on + new password typed → replace the stored password
+        //   • toggle on + input blank → keep the existing password (no-op)
+        const wantOn = !!unEnabled?.checked;
+        const newPlain = (unPassword?.value || '').trim();
+        if (!wantOn) {
+          await window.titanAPI?.identity?.clearUnattendedPassword?.();
+        } else if (newPlain) {
+          if (newPlain.length < 6) {
+            showToast('Mật khẩu cố định phải có ít nhất 6 ký tự', 'error');
+            return;
+          }
+          const r = await window.titanAPI?.identity?.setUnattendedPassword?.(newPlain);
+          if (!r?.success) {
+            showToast(r?.error || 'Không thể lưu mật khẩu cố định', 'error');
+            return;
+          }
+        }
+
+        // Sync OS auto-launch hook with the user's choice. Only register for
+        // launch-at-login when unattended is on AND the user opted in — we
+        // don't want to silently start the app for someone who just enabled
+        // a password but expected to launch it manually.
+        const wantAutoStart = wantOn && !!unAutoStart?.checked;
+        await window.titanAPI?.autoLaunch?.set?.(wantAutoStart);
+
+        // Clear the password field so it isn't sitting in the DOM after save.
+        if (unPassword) unPassword.value = '';
         showToast('Đã lưu cài đặt', 'success');
         modal!.classList.remove('open');
       } catch (e) {
         showToast('Lỗi lưu cài đặt', 'error');
       }
+    });
+
+    // Show / hide the password row based on the enabled toggle so the UI
+    // makes it obvious that ticking the box is what unlocks the password
+    // input — not the other way around.
+    document.getElementById('settings-unattended-enabled')?.addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      const row = document.getElementById('settings-unattended-password-row');
+      if (row) row.style.display = checked ? '' : 'none';
+      const autoRow = document.getElementById('settings-unattended-autostart') as HTMLInputElement | null;
+      if (!checked && autoRow) autoRow.checked = false;
     });
   }
 
@@ -593,9 +666,28 @@ async function openSettingsModal() {
     const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
     const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
     const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+    const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
+    const unAutoStart = document.getElementById('settings-unattended-autostart') as HTMLInputElement;
+    const unStatus = document.getElementById('settings-unattended-status');
+    const unRow = document.getElementById('settings-unattended-password-row');
     if (folderInput) folderInput.value = settings?.downloadFolder || '';
     if (askInput) askInput.checked = !!settings?.askBeforeSave;
     if (hideWpInput) hideWpInput.checked = !!settings?.hideWallpaper;
+
+    // Reflect unattended state. The auto-launch checkbox follows the OS hook
+    // so users see the truth even if another tool toggled the Run key — we
+    // prefer the OS state over our settings flag for that exact reason.
+    const status = await window.titanAPI?.identity?.getUnattendedStatus?.();
+    const auto = await window.titanAPI?.autoLaunch?.get?.();
+    const enabled = !!status?.enabled;
+    if (unEnabled) unEnabled.checked = enabled;
+    if (unRow) unRow.style.display = enabled ? '' : 'none';
+    if (unStatus) {
+      unStatus.textContent = enabled
+        ? 'Mật khẩu cố định đã được đặt — để trống để giữ nguyên, nhập mới để thay đổi'
+        : 'Chưa đặt mật khẩu';
+    }
+    if (unAutoStart) unAutoStart.checked = !!auto?.enabled;
   } catch {
     // best-effort
   }

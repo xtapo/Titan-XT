@@ -77,6 +77,26 @@ export interface AppSettings {
    * When false, save silently to downloadFolder.
    */
   askBeforeSave: boolean;
+  /**
+   * Unattended access — let viewers connect with a fixed personal password
+   * even when no human is at the host to read the rotating 4-char password.
+   * Like AnyDesk's Personal Password / TeamViewer's Unattended Access.
+   *
+   * The plain password is never stored. We keep a salted SHA-256 of it so the
+   * host can verify the viewer's challenge response (`SHA-256(password + nonce)`)
+   * by recomputing both the rotating-password hash AND the unattended hash and
+   * accepting either one.
+   */
+  unattendedEnabled: boolean;
+  /** Salted SHA-256 of the unattended password. Empty when not configured. */
+  unattendedPasswordHash: string;
+  /** Random per-install salt mixed into the hash to defeat rainbow tables. */
+  unattendedPasswordSalt: string;
+  /**
+   * Auto-launch Titan-XT hidden when Windows starts, so the host is reachable
+   * without anyone clicking the icon. Effective only with the unattended flag.
+   */
+  unattendedAutoStart: boolean;
 }
 
 export interface SessionState {

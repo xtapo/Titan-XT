@@ -6,6 +6,7 @@ import { showToast } from '../components/toast';
 import { navigateTo } from '../main';
 import { QUALITY_PROFILES, QualityPreset } from '../../shared/constants';
 import { SessionRecorder, formatElapsed, RecorderState } from '../lib/recorder';
+import { AnnotationController } from '../lib/annotation';
 
 type DisplayFit = 'contain' | 'cover' | 'fill';
 let isHostMode = false;
@@ -20,6 +21,12 @@ let hostControlLocked = false;
 // indicator update + the menu entry can both reach the same instance.
 let recorder: SessionRecorder | null = null;
 let recorderPartnerId: string = '';
+
+// Viewer-side annotation controller. Lazy-mounted on first session render so
+// we don't pay the canvas/toolbar cost when no session is active. The host
+// never instantiates this — annotation is a viewer-driven action that mirrors
+// to the host's transparent overlay window.
+let annotationCtl: AnnotationController | null = null;
 
 /**
  * Render session page structure
@@ -36,6 +43,19 @@ export function renderSessionPage() {
           <div class="connecting-spinner">
             <div class="spinner"></div>
             <p id="session-status-text">Đang kết nối...</p>
+          </div>
+        </div>
+        <!-- Drop overlay shown to the viewer while a file is being dragged
+             over the remote video. Lands on the host's Desktop on release. -->
+        <div class="video-drop-overlay hidden" id="video-drop-overlay">
+          <div class="video-drop-card">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <div class="video-drop-title">Thả để gửi tới Desktop của host</div>
+            <div class="video-drop-sub">File sẽ xuất hiện trên màn hình máy đối tác</div>
           </div>
         </div>
       </div>
@@ -131,6 +151,19 @@ export function renderSessionPage() {
               <button class="dropdown-item" data-fit="contain">Vừa khung</button>
               <button class="dropdown-item" data-fit="cover">Lấp đầy (cắt)</button>
               <button class="dropdown-item" data-fit="fill">Kéo dãn</button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Âm thanh</div>
+              <button class="dropdown-item dropdown-item-toggle" data-audio="toggle" id="menu-audio-toggle">
+                <span class="dropdown-item-label">Bật âm thanh máy đối tác</span>
+                <span class="dropdown-item-check hidden" data-audio-check>✓</span>
+              </button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Vẽ trên màn hình</div>
+              <button class="dropdown-item dropdown-item-toggle" data-annotate="toggle" id="menu-annotate-toggle">
+                <span class="dropdown-item-label">Bật chế độ vẽ</span>
+                <span class="dropdown-item-check hidden" data-annotate-check>✓</span>
+              </button>
+              <button class="dropdown-item" data-annotate="clear">Xóa hết các nét vẽ</button>
             </div>
           </div>
 
@@ -295,10 +328,18 @@ function setupSessionEvents() {
     const fit = item.dataset.fit as DisplayFit | undefined;
     const mode = item.dataset.mode as 'control' | 'view' | undefined;
     const monitorId = item.dataset.monitor;
+    const audio = item.dataset.audio;
+    const annotate = item.dataset.annotate;
     document.getElementById('menu-view')?.classList.add('hidden');
 
     if (mode) {
       handleViewerModeChange(mode);
+    } else if (audio === 'toggle') {
+      toggleRemoteAudio();
+    } else if (annotate === 'toggle') {
+      toggleAnnotationMode();
+    } else if (annotate === 'clear') {
+      annotationCtl?.clear();
     } else if (view === 'fullscreen') {
       const wrapper = document.getElementById('video-wrapper');
       if (wrapper) {
@@ -423,6 +464,10 @@ function setupSessionEvents() {
     });
   }
 
+  // Drag-onto-video: viewer can drop a file straight onto the remote video
+  // and it lands on the host's Desktop. UltraViewer-style "throw it across".
+  setupVideoDropZone();
+
   // Listen for session start
   window.addEventListener('start-session', ((e: CustomEvent) => {
     const { partnerId, password, mode } = e.detail;
@@ -450,6 +495,115 @@ function setupSessionEvents() {
       showToast('Lỗi hệ thống', 'error');
     }
   }) as EventListener);
+}
+
+/**
+ * Wire viewer-side drag-and-drop on the remote video. Dropping a file (or
+ * several) here streams them to the host with `targetHint='desktop'`, so
+ * they appear on the host's actual OS desktop — UltraViewer / AnyDesk-style
+ * "throw a file across the screen" UX.
+ *
+ * The overlay only appears while a real file drag is in progress (we filter
+ * for the `Files` type) so we don't intercept text selection or input drag.
+ * Counter trick handles dragenter firing on every child element.
+ */
+function setupVideoDropZone(): void {
+  const wrapper = document.getElementById('video-wrapper');
+  const overlay = document.getElementById('video-drop-overlay');
+  if (!wrapper || !overlay) return;
+
+  let dragDepth = 0;
+
+  const isFileDrag = (e: DragEvent): boolean => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i += 1) {
+      if (types[i] === 'Files') return true;
+    }
+    return false;
+  };
+
+  wrapper.addEventListener('dragenter', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    // Skip in host mode — the host panel has its own drop handler and the
+    // video element isn't even mounted there.
+    if (isHostMode) return;
+    e.preventDefault();
+    dragDepth += 1;
+    overlay.classList.remove('hidden');
+  });
+
+  wrapper.addEventListener('dragover', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+
+  wrapper.addEventListener('dragleave', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.add('hidden');
+  });
+
+  wrapper.addEventListener('drop', async (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    overlay.classList.add('hidden');
+    if (isHostMode) return;
+
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    if (!window.connectionManager) {
+      showToast('Chưa kết nối — không thể gửi file', 'error');
+      return;
+    }
+
+    for (const f of Array.from(files)) {
+      const filePath = (f as any).path as string | undefined;
+      if (!filePath) {
+        showToast('Không lấy được đường dẫn file — hãy dùng nút Chọn file', 'error');
+        continue;
+      }
+      // Surface the file panel so the user can watch progress.
+      openFilePanel();
+      await window.connectionManager.sendFile(filePath, f.name, f.size, 'desktop');
+    }
+    showToast('Đang gửi file tới Desktop của host...', 'info');
+  });
+}
+
+/**
+ * Viewer-side: flip annotation mode on / off. While active, the canvas
+ * overlay swallows pointer events so they don't leak into the remote-input
+ * handler, and strokes are mirrored to the host's transparent overlay
+ * window over CHANNEL_ANNOTATION. The "Bật chế độ vẽ" toggle owns the
+ * checkmark + the toolbar visibility together.
+ */
+function toggleAnnotationMode(): void {
+  const wrapper = document.getElementById('video-wrapper');
+  if (!wrapper) return;
+  if (!window.connectionManager) {
+    showToast('Chưa kết nối — chưa thể vẽ', 'info');
+    return;
+  }
+
+  if (!annotationCtl) {
+    annotationCtl = new AnnotationController();
+  }
+  // Re-attach is idempotent — safe to call every toggle in case the session
+  // re-rendered the wrapper (e.g. after navigating home and back).
+  annotationCtl.attach(wrapper, (msg) => {
+    window.connectionManager?.sendAnnotation(msg);
+  });
+  annotationCtl.toggle();
+
+  const check = document.querySelector('[data-annotate-check]');
+  const label = document.querySelector('#menu-annotate-toggle .dropdown-item-label');
+  const on = annotationCtl.isActive;
+  check?.classList.toggle('hidden', !on);
+  if (label) label.textContent = on ? 'Tắt chế độ vẽ' : 'Bật chế độ vẽ';
 }
 
 /**
@@ -651,6 +805,38 @@ async function openRecordingsFolder(): Promise<void> {
   if (result?.success === false) {
     showToast(result.error || 'Không mở được thư mục', 'error');
   }
+}
+
+/**
+ * Viewer-side: flip the remote video element between muted and unmuted.
+ * The element starts muted so Chromium honors the autoplay policy on first
+ * stream attach; the user opts in to host audio explicitly via the menu.
+ *
+ * Updates the menu checkmark + label so the current state is obvious.
+ */
+function toggleRemoteAudio(): void {
+  const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+  if (!video) return;
+  const stream = video.srcObject as MediaStream | null;
+  const hasAudio = !!stream && stream.getAudioTracks().length > 0;
+  if (!hasAudio) {
+    showToast('Máy đối tác không gửi âm thanh', 'info');
+    return;
+  }
+
+  video.muted = !video.muted;
+  // Volume defaults to 1; reset in case the OS or a previous session left it at 0.
+  if (!video.muted && video.volume === 0) video.volume = 1;
+
+  const check = document.querySelector('[data-audio-check]');
+  const label = document.querySelector('#menu-audio-toggle .dropdown-item-label');
+  check?.classList.toggle('hidden', video.muted);
+  if (label) {
+    label.textContent = video.muted
+      ? 'Bật âm thanh máy đối tác'
+      : 'Tắt âm thanh máy đối tác';
+  }
+  showToast(video.muted ? 'Đã tắt âm thanh' : 'Đã bật âm thanh máy đối tác', 'info');
 }
 
 /**
@@ -944,6 +1130,20 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
   if (!page) return;
   page.innerHTML = `
     <div class="host-panel" id="host-panel">
+      <!-- Drop overlay shown when the host drags a file onto the panel.
+           Streams the file to the connected viewer so it lands on their
+           Desktop. Mirrors the viewer's drag-onto-video flow. -->
+      <div class="host-panel-drop-overlay hidden" id="host-panel-drop-overlay">
+        <div class="host-panel-drop-card">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <div class="host-panel-drop-title">Thả để gửi tới khách</div>
+          <div class="host-panel-drop-sub">File sẽ xuất hiện trên Desktop của họ</div>
+        </div>
+      </div>
       <div class="host-panel-collapsed-tab" id="host-panel-tab" title="Mở rộng">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <polyline points="9 18 15 12 9 6"/>
@@ -1007,6 +1207,7 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
 
   renderHostViewers();
   setupHostPanelEvents();
+  setupHostPanelDropZone();
   refreshHostLockUI();
   showToast(`${displayName} đã kết nối vào máy của bạn`, 'info');
 }
@@ -1105,6 +1306,77 @@ function setHostPanelCollapsed(collapsed: boolean): void {
   hostPanelCollapsed = collapsed;
   document.body.classList.toggle('host-mode-collapsed', collapsed);
   window.titanAPI?.window?.setHostCollapsed?.(collapsed);
+}
+
+/**
+ * Wire host-side drag-and-drop on the mini panel. Dropping a file streams
+ * it to the connected viewer with `targetHint='desktop'`, so the viewer
+ * sees the file land on its own OS desktop. Symmetrical with the viewer's
+ * drag-onto-video flow.
+ *
+ * Auto-expands the panel on dragenter so the host can see the drop target
+ * even when collapsed to the side tab.
+ */
+function setupHostPanelDropZone(): void {
+  const panel = document.getElementById('host-panel');
+  const overlay = document.getElementById('host-panel-drop-overlay');
+  if (!panel || !overlay) return;
+
+  let dragDepth = 0;
+
+  const isFileDrag = (e: DragEvent): boolean => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i += 1) {
+      if (types[i] === 'Files') return true;
+    }
+    return false;
+  };
+
+  panel.addEventListener('dragenter', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth += 1;
+    if (hostPanelCollapsed) setHostPanelCollapsed(false);
+    overlay.classList.remove('hidden');
+  });
+
+  panel.addEventListener('dragover', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+
+  panel.addEventListener('dragleave', (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.add('hidden');
+  });
+
+  panel.addEventListener('drop', async (e: DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    overlay.classList.add('hidden');
+
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    if (!window.connectionManager) {
+      showToast('Chưa kết nối — không thể gửi file', 'error');
+      return;
+    }
+
+    for (const f of Array.from(files)) {
+      const filePath = (f as any).path as string | undefined;
+      if (!filePath) {
+        showToast('Không lấy được đường dẫn file', 'error');
+        continue;
+      }
+      await window.connectionManager.sendFile(filePath, f.name, f.size, 'desktop');
+    }
+    showToast('Đang gửi file tới Desktop của khách...', 'info');
+  });
 }
 
 /**
@@ -1403,6 +1675,13 @@ function handleDisconnect() {
   // the stream — otherwise MediaRecorder loses the tail of the session.
   if (recorder?.isRecording) {
     recorder.stop().catch(() => {});
+  }
+
+  // Tear down annotation overlay so a stale canvas doesn't sit on top of
+  // the next session's video.
+  if (annotationCtl) {
+    annotationCtl.detach();
+    annotationCtl = null;
   }
 
   // Tear down WebRTC peer + input handler so we don't leave a live session behind.

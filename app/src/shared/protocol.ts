@@ -40,6 +40,14 @@ export interface FileOfferMessage {
   fileName: string;
   fileSize: number;
   fileType: string;
+  /**
+   * Hint from sender about where the receiver should save the file.
+   * 'desktop' — drop the file straight onto the receiver's OS desktop,
+   * bypassing the configured download folder + the "ask before save" dialog.
+   * Used by drag-onto-video / drag-onto-host-panel for an UltraViewer-style
+   * "drop and it appears on the other side's desktop" workflow.
+   */
+  targetHint?: 'desktop';
 }
 
 export interface FileResponseMessage {
@@ -76,6 +84,49 @@ export type FileMessage =
   | FileChunkMessage
   | FileCompleteMessage
   | FileErrorMessage;
+
+// --- Annotation (viewer draws on screen, host shows on desktop) ---
+export type AnnotationTool = 'pen' | 'arrow' | 'rect' | 'highlight';
+
+export interface AnnotationStrokeBegin {
+  type: 'annotation';
+  action: 'begin';
+  /** Stroke id assigned by the viewer; receivers key strokes by it. */
+  strokeId: string;
+  tool: AnnotationTool;
+  /** CSS color string. Receiver renders it as-is. */
+  color: string;
+  /** Line thickness in CSS px at 1080p reference; receiver scales. */
+  width: number;
+  /** Opening point, normalized 0-1 of source video frame. */
+  x: number;
+  y: number;
+}
+
+export interface AnnotationStrokePoint {
+  type: 'annotation';
+  action: 'point';
+  strokeId: string;
+  x: number;
+  y: number;
+}
+
+export interface AnnotationStrokeEnd {
+  type: 'annotation';
+  action: 'end';
+  strokeId: string;
+}
+
+export interface AnnotationClear {
+  type: 'annotation';
+  action: 'clear';
+}
+
+export type AnnotationMessage =
+  | AnnotationStrokeBegin
+  | AnnotationStrokePoint
+  | AnnotationStrokeEnd
+  | AnnotationClear;
 
 // --- System Messages ---
 export type RemoteActionId =
@@ -115,4 +166,5 @@ export type DataChannelMessage =
   | KeyMessage
   | ChatMessage
   | FileMessage
-  | SystemMessage;
+  | SystemMessage
+  | AnnotationMessage;

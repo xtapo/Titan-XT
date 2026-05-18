@@ -15,6 +15,10 @@ const defaultSettings: AppSettings = {
   allowedIPs: [],
   downloadFolder: '',
   askBeforeSave: false,
+  unattendedEnabled: false,
+  unattendedPasswordHash: '',
+  unattendedPasswordSalt: '',
+  unattendedAutoStart: false,
 };
 
 /**

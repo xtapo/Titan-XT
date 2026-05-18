@@ -60,13 +60,20 @@ export function setupFileTransfer(): void {
     }
   });
 
-  // Save received file
-  ipcMain.handle('file:saveFile', async (event, fileName: string, base64Data: string) => {
+  // Save received file. `targetHint` lets the sender request a save location
+  // out of band — e.g. drag-onto-video maps to 'desktop' so the file lands
+  // straight on the receiver's OS desktop instead of inside Downloads.
+  ipcMain.handle('file:saveFile', async (event, fileName: string, base64Data: string, targetHint?: 'desktop') => {
     const settings = getStore().get('settings') as AppSettings | undefined;
-    const saveDir = resolveSaveDir();
+    const saveDir = targetHint === 'desktop'
+      ? app.getPath('desktop')
+      : resolveSaveDir();
     let finalPath: string;
 
-    if (settings?.askBeforeSave) {
+    // Drag-and-drop is an explicit "land it here" gesture from the sender —
+    // honoring askBeforeSave on top of that would defeat the whole UX, so
+    // hinted saves always go silent + auto-rename on collision.
+    if (settings?.askBeforeSave && !targetHint) {
       // Prompt the user. Default file is the suggested name inside saveDir.
       const win = BrowserWindow.fromWebContents(event.sender) || undefined;
       const result = await dialog.showSaveDialog(win!, {

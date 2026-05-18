@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Annotation Overlay</title>
+  <style>
+    /* Transparent canvas covering the full screen. The HTML/body must also be
+       transparent — any non-transparent paint anywhere in the document blocks
+       click-through on Windows. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: transparent !important;
+      overflow: hidden;
+      cursor: none;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="layer"></canvas>
+  <script>
+    /**
+     * Host-side annotation overlay renderer.
+     *
+     * Receives annotation stroke messages over IPC (preload bridge) and paints
+     * them on a transparent canvas that covers the shared monitor. Strokes
+     * fade out after a few seconds so leftover marks don't clutter the host's
+     * screen forever.
+     *
+     * The viewer sends coordinates as 0-1 ratios of the source video frame —
+     * we multiply by canvas size to get pixels. That way the overlay tracks
+     * the host's actual resolution, even if the viewer is displaying a
+     * downscaled version.
+     */
+
+    const FADE_MS = 6000;       // total stroke lifetime before it disappears
+    const FADE_TAIL_MS = 1200;  // last N ms are an alpha ramp from 1 → 0
+
+    const canvas = document.getElementById('layer');
+    const ctx = canvas.getContext('2d');
+
+    // Track stroke state by id so out-of-order or interleaved strokes still
+    // render correctly. Each stroke holds its tool / color / point list and a
+    // timestamp used for fading.
+    const strokes = new Map();
+    let activeDraw = false;
+
+    function resizeCanvas() {
+      // Use the device pixel ratio so 1px lines stay crisp on HiDPI screens.
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    /** Convert a stored stroke point (0-1 ratio) to canvas-local pixel coords. */
+    function toPx(p) {
+      return { x: p.x * window.innerWidth, y: p.y * window.innerHeight };
+    }
+
+    /**
+     * Apply the right Canvas2D state for a stroke's tool. Each branch sets
+     * lineWidth, strokeStyle, and any composite mode the tool needs.
+     */
+    function applyToolStyle(stroke) {
+      const w = Math.max(1, stroke.width || 4);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = w;
+      ctx.strokeStyle = stroke.color || '#ff3b3b';
+      ctx.fillStyle = stroke.color || '#ff3b3b';
+      // Highlight: chunky semi-transparent line, blends to mimic a marker.
+      if (stroke.tool === 'highlight') {
+        ctx.lineWidth = w * 4;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha *= 0.35;
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+
+    /** Pen / highlight: connect every point as a smooth polyline. */
+    function drawPolyline(stroke) {
+      if (stroke.points.length === 0) return;
+      ctx.beginPath();
+      const first = toPx(stroke.points[0]);
+      ctx.moveTo(first.x, first.y);
+      for (let i = 1; i < stroke.points.length; i += 1) {
+        const p = toPx(stroke.points[i]);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    /** Rectangle: bbox between first and last point. */
+    function drawRect(stroke) {
+      if (stroke.points.length < 1) return;
+      const a = toPx(stroke.points[0]);
+      const b = toPx(stroke.points[stroke.points.length - 1]);
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      const w = Math.abs(b.x - a.x);
+      const h = Math.abs(b.y - a.y);
+      ctx.strokeRect(x, y, w, h);
+    }
+
+    /**
+     * Arrow: line from start → end with a filled triangular head. Head size
+     * scales with line width so a thicker pen draws a bigger arrow.
+     */
+    function drawArrow(stroke) {
+      if (stroke.points.length < 2) return;
+      const a = toPx(stroke.points[0]);
+      const b = toPx(stroke.points[stroke.points.length - 1]);
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 2) return;
+      const headLen = Math.max(12, ctx.lineWidth * 4);
+      const angle = Math.atan2(dy, dx);
+
+      // Shaft
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x - Math.cos(angle) * headLen * 0.7, b.y - Math.sin(angle) * headLen * 0.7);
+      ctx.stroke();
+
+      // Filled triangular head
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(
+        b.x - headLen * Math.cos(angle - Math.PI / 7),
+        b.y - headLen * Math.sin(angle - Math.PI / 7),
+      );
+      ctx.lineTo(
+        b.x - headLen * Math.cos(angle + Math.PI / 7),
+        b.y - headLen * Math.sin(angle + Math.PI / 7),
+      );
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    /** Render every live stroke at its current fade-alpha. */
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const now = Date.now();
+      const expired = [];
+
+      for (const [id, stroke] of strokes) {
+        const age = now - stroke.startedAt;
+        if (age >= FADE_MS && stroke.ended) {
+          expired.push(id);
+          continue;
+        }
+        // Compute fade alpha: full strength for the first (FADE_MS - FADE_TAIL_MS),
+        // then linearly ramp to 0. While the stroke is being actively drawn (not
+        // yet ended), keep it at full strength regardless of age — the user is
+        // still working on it.
+        let alpha = 1;
+        if (stroke.ended) {
+          const remaining = FADE_MS - age;
+          if (remaining < FADE_TAIL_MS) {
+            alpha = Math.max(0, remaining / FADE_TAIL_MS);
+          }
+        }
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        applyToolStyle(stroke);
+
+        if (stroke.tool === 'rect') {
+          drawRect(stroke);
+        } else if (stroke.tool === 'arrow') {
+          drawArrow(stroke);
+        } else {
+          drawPolyline(stroke);
+        }
+        ctx.restore();
+      }
+
+      for (const id of expired) strokes.delete(id);
+
+      activeDraw = strokes.size > 0;
+      if (activeDraw) requestAnimationFrame(render);
+    }
+
+    function ensureRendering() {
+      if (activeDraw) return;
+      activeDraw = true;
+      requestAnimationFrame(render);
+    }
+
+    /**
+     * Called from preload whenever a new stroke message arrives over IPC.
+     * Mutates the in-memory stroke map and kicks the render loop.
+     */
+    function onStroke(msg) {
+      if (!msg || msg.type !== 'annotation') return;
+
+      if (msg.action === 'clear') {
+        strokes.clear();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+
+      if (msg.action === 'begin') {
+        strokes.set(msg.strokeId, {
+          tool: msg.tool || 'pen',
+          color: msg.color || '#ff3b3b',
+          width: msg.width || 4,
+          points: [{ x: msg.x, y: msg.y }],
+          startedAt: Date.now(),
+          ended: false,
+        });
+        ensureRendering();
+        return;
+      }
+
+      if (msg.action === 'point') {
+        const stroke = strokes.get(msg.strokeId);
+        if (!stroke) return;
+        stroke.points.push({ x: msg.x, y: msg.y });
+        // Reset the fade clock so an active stroke never grays out under the
+        // user's mouse — fade only kicks in after stroke-end.
+        stroke.startedAt = Date.now();
+        ensureRendering();
+        return;
+      }
+
+      if (msg.action === 'end') {
+        const stroke = strokes.get(msg.strokeId);
+        if (!stroke) return;
+        stroke.ended = true;
+        stroke.startedAt = Date.now(); // start counting from here
+        ensureRendering();
+        return;
+      }
+    }
+
+    // Bridge: preload exposes window.titanOverlay.onStroke as a registration
+    // function. We give it our handler so every IPC stroke ends up here.
+    if (window.titanOverlay && typeof window.titanOverlay.onStroke === 'function') {
+      window.titanOverlay.onStroke(onStroke);
+    }
+  </script>
+</body>
+</html>

@@ -20,6 +20,7 @@ import {
   CHANNEL_CHAT,
   CHANNEL_FILE,
   CHANNEL_SYSTEM,
+  CHANNEL_ANNOTATION,
   DEFAULT_SIGNAL_SERVER,
   HEARTBEAT_INTERVAL,
   DEFAULT_QUALITY,
@@ -36,6 +37,7 @@ import {
   FileMessage,
   FileOfferMessage,
   FileChunkMessage,
+  AnnotationMessage,
 } from '../../shared/protocol';
 
 export class ConnectionManager {
@@ -72,7 +74,7 @@ export class ConnectionManager {
   // Suppresses auto-reconnect on the closure cascade that follows.
   private intentionalClose: boolean = false;
   // File transfer: incoming chunks are buffered until 'complete' arrives.
-  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number }> = new Map();
+  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number; targetHint?: 'desktop' }> = new Map();
 
   // === Adaptive quality (viewer-side) ===
   // The viewer watches RTT + packet loss and asks the host to step the
@@ -151,7 +153,10 @@ export class ConnectionManager {
       // Handle password verification request
       this.socket.on('password-verify', async (data: any) => {
         console.log('[Conn] Password verification request');
-        const isValid = await this.verifyPassword(data.passwordHash, data.nonce);
+        // Pass the viewer's machine id so the host's brute-force throttle can
+        // count failures per identity instead of globally — a single bad
+        // viewer can't lock out everyone else.
+        const isValid = await this.verifyPassword(data.passwordHash, data.nonce, data.fromId);
         this.socket!.emit('connect-response', {
           toId: data.fromId,
           accepted: isValid,
@@ -306,6 +311,10 @@ export class ConnectionManager {
           this.handleFileMessage(data);
         } else if (channel === CHANNEL_SYSTEM) {
           this.handleSystemMessage(data);
+        } else if (channel === CHANNEL_ANNOTATION) {
+          // Viewer drew on the screen — forward to main so the transparent
+          // overlay window paints the stroke on the host's actual desktop.
+          this.handleHostAnnotation(data);
         }
       },
       onStateChange: (state) => {
@@ -585,10 +594,10 @@ export class ConnectionManager {
       .join('');
   }
 
-  private async verifyPassword(hash: string, nonce: string): Promise<boolean> {
+  private async verifyPassword(hash: string, nonce: string, viewerId?: string): Promise<boolean> {
     try {
       if (window.titanAPI?.identity) {
-        return await (window as any).titanAPI.identity.verifyPassword?.(hash, nonce) ?? false;
+        return await (window as any).titanAPI.identity.verifyPassword?.(hash, nonce, viewerId) ?? false;
       }
     } catch {
       return false;
@@ -615,8 +624,16 @@ export class ConnectionManager {
    * Reads the file in chunks via main process IPC and streams them as
    * base64-encoded chunk messages. Backpressure is honored by waiting
    * when the data channel buffer grows too large.
+   *
+   * `targetHint='desktop'` flags the offer so the receiver writes straight
+   * to its OS desktop — used by drag-onto-video / drag-onto-host-panel.
    */
-  async sendFile(filePath: string, fileName: string, fileSize: number): Promise<void> {
+  async sendFile(
+    filePath: string,
+    fileName: string,
+    fileSize: number,
+    targetHint?: 'desktop',
+  ): Promise<void> {
     if (!this.peer) {
       showToast('Chưa kết nối — không thể gửi file', 'error');
       return;
@@ -637,6 +654,7 @@ export class ConnectionManager {
       type: 'file', action: 'offer',
       fileId, fileName, fileSize,
       fileType: fileName.split('.').pop() || '',
+      ...(targetHint ? { targetHint } : {}),
     };
     if (!this.peer.send(CHANNEL_FILE, offer)) {
       updateFileProgress(fileId, 0, 'error');
@@ -703,6 +721,7 @@ export class ConnectionManager {
         size: msg.fileSize,
         chunks: new Array(0),
         received: 0,
+        targetHint: msg.targetHint,
       });
       addFileEntry(msg.fileId, msg.fileName, msg.fileSize, 'receiving');
       return;
@@ -726,10 +745,11 @@ export class ConnectionManager {
       try {
         // Concatenate base64 chunks then hand off to main for disk write.
         const fullBase64 = entry.chunks.join('');
-        const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64);
+        const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64, entry.targetHint);
         if (result?.success) {
           updateFileProgress(msg.fileId, 100, 'complete');
-          showToast(`Đã nhận: ${entry.name}`, 'success');
+          const where = entry.targetHint === 'desktop' ? ' (Desktop)' : '';
+          showToast(`Đã nhận: ${entry.name}${where}`, 'success');
         } else {
           updateFileProgress(msg.fileId, 0, 'error');
           showToast(`Lỗi lưu ${entry.name}`, 'error');
@@ -895,6 +915,13 @@ export class ConnectionManager {
       // Re-apply the active quality profile so the new track inherits the
       // same bitrate caps + framerate as the previous one.
       await this.peer.applyQualityProfile(this.currentQuality);
+      // Move the annotation overlay to the new monitor so future strokes
+      // land on the right desktop instead of the previous source.
+      try {
+        await (window as any).titanAPI?.annotation?.setSource?.(sourceId);
+      } catch (err) {
+        console.warn('[Conn] annotation setSource failed:', err);
+      }
       await this.pushMonitorListToViewer();
       showToast('Đã đổi màn hình chia sẻ', 'success');
     } catch (err) {
@@ -929,7 +956,7 @@ export class ConnectionManager {
     // forms — ignore those samples so we don't false-positive an "upgrade".
     if (rttMs <= 0) return;
 
-    const order: QualityPreset[] = ['max', 'ultra', 'high', 'medium', 'low'];
+    const order: QualityPreset[] = ['max', 'ultra', 'high', 'medium', 'low', 'tiny'];
     const idx = order.indexOf(this.currentQuality);
     if (idx === -1) return;
 
@@ -1242,6 +1269,34 @@ export class ConnectionManager {
     }
   }
 
+  /**
+   * Viewer-side: send an annotation message to the host. The host renders
+   * the stroke on a transparent click-through overlay that covers the
+   * shared monitor — what UltraViewer / TeamViewer call "screen drawing"
+   * for live remote support.
+   */
+  sendAnnotation(msg: AnnotationMessage): boolean {
+    if (this.role !== 'viewer') return false;
+    return this.peer?.send(CHANNEL_ANNOTATION, msg) ?? false;
+  }
+
+  /**
+   * Host-side: relay an incoming annotation message to the main process so
+   * the transparent overlay window can paint the stroke. Best-effort —
+   * a missing IPC bridge just means the host build doesn't ship the
+   * annotation overlay yet.
+   */
+  private handleHostAnnotation(msg: AnnotationMessage): void {
+    if (!msg || msg.type !== 'annotation') return;
+    const api = (window as any).titanAPI?.annotation;
+    if (!api?.relay) return;
+    try {
+      api.relay(msg);
+    } catch (err) {
+      console.warn('[Conn] annotation relay failed:', err);
+    }
+  }
+
   // === Disconnect ===
 
   disconnect(): void {
@@ -1269,6 +1324,13 @@ export class ConnectionManager {
     this.inputHandler = null;
     if (this.role === 'host') {
       exitHostMode();
+      // Tear down the host-side annotation overlay so it doesn't dangle as
+      // a transparent window above the desktop after the session ends.
+      try {
+        (window as any).titanAPI?.annotation?.close?.();
+      } catch (e) {
+        console.warn('[Conn] annotation close failed:', e);
+      }
       // Always try to restore — restoreWallpaper is a no-op when the user
       // had hideWallpaper turned off, so we don't need to track the flag.
       window.titanAPI?.wallpaper?.restore().catch((err: unknown) =>

@@ -42,7 +42,7 @@ export const ADAPTIVE_SAMPLE_INTERVAL_MS = 2_000;
 export const ADAPTIVE_DEBOUNCE_SAMPLES = 3;   // require N consecutive samples before changing tier
 
 // Quality presets — viewer picks one, host re-applies sender params + capture constraints
-export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low';
+export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low' | 'tiny';
 
 export interface QualityProfile {
   label: string;
@@ -88,6 +88,13 @@ export const QUALITY_PROFILES: Record<QualityPreset, QualityProfile> = {
     maxBitrate: 1_500_000,
     maxFramerate: 15,
   },
+  tiny: {
+    label: 'Rất thấp (480p · 300 kbps · 15fps)',
+    maxWidth: 854,
+    maxHeight: 480,
+    maxBitrate: 300_000,
+    maxFramerate: 15,
+  },
 };
 
 export const DEFAULT_QUALITY: QualityPreset = 'high';
@@ -97,6 +104,21 @@ export const CHANNEL_INPUT = 'input';
 export const CHANNEL_CHAT = 'chat';
 export const CHANNEL_FILE = 'file';
 export const CHANNEL_SYSTEM = 'system';
+// Annotation channel — viewer draws on a canvas overlay over the remote video
+// and strokes are mirrored on the host's actual desktop via a transparent
+// click-through window. Separate channel so high-volume mousemove-during-draw
+// can't starve chat / file / system traffic.
+export const CHANNEL_ANNOTATION = 'annotation';
+
+// Annotation
+// Strokes auto-fade after this long so leftover marks don't clutter the host's
+// screen forever. Reset on every new point so an actively-being-drawn stroke
+// doesn't disappear under the user.
+export const ANNOTATION_FADE_MS = 6_000;
+// Cap how often we relay mousemove during an active stroke. WebRTC data
+// channels handle thousands of msg/sec but we don't need pixel-perfect
+// fidelity — 60Hz feels live and keeps the channel quiet.
+export const ANNOTATION_POINT_THROTTLE_MS = 16;
 
 // Connection
 export const HEARTBEAT_INTERVAL = 10_000;
