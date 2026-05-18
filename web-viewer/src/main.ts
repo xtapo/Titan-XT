@@ -8,7 +8,7 @@
 
 import { ConnectionManager } from './connection';
 import { TouchInput } from './touch-input';
-import { DEFAULT_QUALITY, QualityPreset, QUALITY_LABELS, SIGNAL_SERVER } from './constants';
+import { DEFAULT_QUALITY, QualityPreset, QUALITY_LABELS } from './constants';
 
 // === DOM helpers ===
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -56,7 +56,7 @@ function renderLogin() {
         <button id="connectBtn" class="connect-btn">Kết nối</button>
         <div id="status" class="status-line"></div>
       </div>
-      <div class="server-row">Server: ${escapeHtml(SIGNAL_SERVER)}</div>
+      <div class="server-row" id="serverStatus"><span class="status-dot offline"></span> Chưa kết nối máy chủ</div>
     </div>
   `;
 
@@ -88,8 +88,10 @@ function renderLogin() {
     }
 
     connectBtn.disabled = true;
-    status.textContent = 'Đang kết nối server…';
+    status.textContent = 'Đang kết nối máy chủ…';
     status.className = 'status-line';
+    const serverStatus = $<HTMLDivElement>('#serverStatus');
+    if (serverStatus) serverStatus.innerHTML = '<span class="status-dot connecting"></span> Đang kết nối…';
 
     await runSession(partnerId, password, status, () => {
       connectBtn.disabled = false;
@@ -149,11 +151,18 @@ async function runSession(
         const lat = $<HTMLSpanElement>('#statLatency');
         const fps = $<HTMLSpanElement>('#statFps');
         const br = $<HTMLSpanElement>('#statBitrate');
+        const res = $<HTMLSpanElement>('#statRes');
         if (lat) lat.textContent = `${stats.latency}ms`;
         if (fps) fps.textContent = `${stats.fps}fps`;
         if (br) {
           const mbps = stats.bitrate / 1_000_000;
           br.textContent = mbps >= 1 ? `${mbps.toFixed(1)}Mbps` : `${Math.round(stats.bitrate / 1000)}kbps`;
+        }
+        // Surface the actual decoded frame size — when the host downscales
+        // because of bandwidth pressure this is how the user finds out the
+        // 'max' preset they picked is delivering 720p instead of 4K.
+        if (res && stats.frameWidth && stats.frameHeight) {
+          res.textContent = `${stats.frameWidth}×${stats.frameHeight}`;
         }
       },
       onError: (msg) => {
@@ -174,10 +183,13 @@ async function runSession(
   );
 
   const ok = await conn.connectToServer();
+  const serverStatus = $<HTMLDivElement>('#serverStatus');
   if (!ok) {
+    if (serverStatus) serverStatus.innerHTML = '<span class="status-dot offline"></span> Không kết nối được máy chủ';
     onFatal();
     return;
   }
+  if (serverStatus) serverStatus.innerHTML = '<span class="status-dot online"></span> Đã kết nối máy chủ';
   status.textContent = 'Đang xác thực…';
   await conn.connectToPartner(partnerId, password);
 
@@ -197,6 +209,7 @@ function renderSession(conn: ConnectionManager) {
         <span class="stat-chip" id="statLatency">--ms</span>
         <span class="stat-chip" id="statFps">--fps</span>
         <span class="stat-chip" id="statBitrate">--kbps</span>
+        <span class="stat-chip" id="statRes">--×--</span>
       </div>
 
       <div class="quality-panel" id="qualityPanel">
@@ -242,12 +255,20 @@ function renderSession(conn: ConnectionManager) {
           <div class="gesture-text"><strong>Chạm 2 ngón</strong><span>Click chuột phải</span></div>
         </div>
         <div class="gesture-row">
+          <div class="gesture-icon">···</div>
+          <div class="gesture-text"><strong>Chạm 3 ngón</strong><span>Click chuột giữa (mở tab mới…)</span></div>
+        </div>
+        <div class="gesture-row">
+          <div class="gesture-icon">··</div>
+          <div class="gesture-text"><strong>Chạm 1 ngón × 2</strong><span>Double click</span></div>
+        </div>
+        <div class="gesture-row">
           <div class="gesture-icon">↔</div>
-          <div class="gesture-text"><strong>Vuốt 1 ngón</strong><span>Di chuyển con trỏ</span></div>
+          <div class="gesture-text"><strong>Vuốt 1 ngón</strong><span>Di chuyển con trỏ (có gia tốc)</span></div>
         </div>
         <div class="gesture-row">
           <div class="gesture-icon">↕↕</div>
-          <div class="gesture-text"><strong>Vuốt 2 ngón</strong><span>Cuộn dọc / ngang</span></div>
+          <div class="gesture-text"><strong>Vuốt 2 ngón</strong><span>Cuộn dọc / ngang, có quán tính</span></div>
         </div>
         <div class="gesture-row">
           <div class="gesture-icon">⏱</div>
@@ -262,6 +283,9 @@ function renderSession(conn: ConnectionManager) {
         </button>
         <button class="tool-btn" id="btnQuality">
           <span class="tool-icon">◐</span><span>Chất lượng</span>
+        </button>
+        <button class="tool-btn" id="btnRotate">
+          <span class="tool-icon">⟲</span><span>Xoay ngang</span>
         </button>
         <button class="tool-btn" id="btnHelp">
           <span class="tool-icon">?</span><span>Cử chỉ</span>
@@ -279,6 +303,97 @@ function renderSession(conn: ConnectionManager) {
   const video = $<HTMLVideoElement>('#remoteVideo');
   const touch = new TouchInput(video, conn);
   touch.enable();
+
+  // Re-render the virtual cursor when the viewport changes (orientation
+  // change, fullscreen toggle, on-screen keyboard appearing). Without this,
+  // the cursor floats off the video after the layout reshuffles.
+  const onResize = () => touch.recenterCursor();
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+
+  // === Auto-rotate to landscape ===
+  // Host PCs are 16:9 / 21:9, phones are 9:16 — viewing a 4K screen on a
+  // portrait phone wastes ~60% of pixels on letterboxing. Try the platform
+  // landscape lock first (Chrome Android only, requires fullscreen on most
+  // builds), then fall back to a CSS rotation that works everywhere.
+  type RotationMode = 'auto' | 'forced-landscape' | 'forced-portrait';
+  let rotationMode: RotationMode = 'auto';
+  const sessionEl = $<HTMLDivElement>('.session');
+  const rotateBtn = $<HTMLButtonElement>('#btnRotate');
+
+  const isPortraitNow = () =>
+    (window.matchMedia?.('(orientation: portrait)').matches ?? window.innerHeight > window.innerWidth);
+
+  const applyRotation = () => {
+    const portraitDevice = isPortraitNow();
+    const shouldCssRotate = rotationMode === 'forced-landscape' && portraitDevice;
+    const shouldCssRotatePortrait = rotationMode === 'forced-portrait' && !portraitDevice;
+    if (shouldCssRotate) {
+      sessionEl.classList.add('rotate-cw');
+      sessionEl.classList.remove('rotate-ccw');
+      touch.setRotation(90);
+    } else if (shouldCssRotatePortrait) {
+      sessionEl.classList.add('rotate-ccw');
+      sessionEl.classList.remove('rotate-cw');
+      touch.setRotation(-90);
+    } else {
+      sessionEl.classList.remove('rotate-cw', 'rotate-ccw');
+      touch.setRotation(0);
+    }
+    setTimeout(() => onResize(), 50);
+  };
+
+  // Try the native orientation lock first — only works inside fullscreen on
+  // most browsers. Failure is silent; CSS rotation kicks in as fallback.
+  const tryNativeLandscape = async (): Promise<boolean> => {
+    try {
+      const orient = (screen.orientation as any);
+      if (orient?.lock) {
+        await orient.lock('landscape');
+        return true;
+      }
+    } catch {
+      // Locked-out / not in fullscreen / iOS Safari (unsupported) — fall through.
+    }
+    return false;
+  };
+
+  const tryNativeUnlock = () => {
+    try {
+      (screen.orientation as any)?.unlock?.();
+    } catch {
+      // ignore
+    }
+  };
+
+  // Default: auto-attempt landscape lock once at session start. If the
+  // browser refuses (no fullscreen, iOS), CSS rotation isn't applied yet —
+  // we wait for the user to tap the rotate button so they get a clear
+  // affordance instead of the page flipping out from under them.
+  tryNativeLandscape().catch(() => {
+    // ignore — best effort
+  });
+
+  rotateBtn.addEventListener('click', async () => {
+    if (rotationMode === 'auto') {
+      // Step 1: try native landscape lock (free, no CSS hack).
+      const locked = await tryNativeLandscape();
+      if (locked) {
+        // Native lock holds — UI updates via the orientationchange listener.
+        showToast('Đã khoá ngang', 'success');
+        return;
+      }
+      // Step 2: native refused → CSS-rotate as fallback.
+      rotationMode = 'forced-landscape';
+      applyRotation();
+      showToast('Đã xoay ngang', 'success');
+    } else {
+      tryNativeUnlock();
+      rotationMode = 'auto';
+      applyRotation();
+      showToast('Trở về tự động', 'info');
+    }
+  });
 
   // Ensure muted-then-unmute pattern for iOS Safari autoplay.
   video.addEventListener('loadedmetadata', () => {
@@ -330,6 +445,11 @@ function renderSession(conn: ConnectionManager) {
   });
 
   // === Quality picker ===
+  // The host defaults to 'high' (1080p) on its own — no need to auto-push a
+  // preset from here. Earlier versions did, with a 1.5s timer; if the user
+  // tapped "Tối đa" within that window the timer fired afterwards and
+  // overrode the choice back to default. Now the host keeps its default
+  // until the user explicitly picks something.
   let activeQuality: QualityPreset = DEFAULT_QUALITY;
   const markQuality = (preset: QualityPreset) => {
     qualityPanel.querySelectorAll<HTMLButtonElement>('.quality-option').forEach((b) => {
@@ -337,13 +457,6 @@ function renderSession(conn: ConnectionManager) {
     });
   };
   markQuality(activeQuality);
-  // Tell the host our default mobile preset right after the system channel
-  // opens. Wrapped in a small delay so the data channel has time to come up.
-  setTimeout(() => {
-    if (conn.requestQuality(activeQuality)) {
-      // sent successfully
-    }
-  }, 1500);
 
   qualityPanel.querySelectorAll<HTMLButtonElement>('.quality-option').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -435,11 +548,6 @@ function formatId(digits: string): string {
   return `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
-  );
-}
 
 /**
  * Best-effort guess for KeyboardEvent.code from a single character.

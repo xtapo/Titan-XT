@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-web-viewer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Mobile/PWA viewer for Titan-XT — connect to a Titan-XT host from a browser",
   "private": true,
   "type": "module",

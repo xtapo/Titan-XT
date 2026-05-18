@@ -15,6 +15,7 @@
 import { io, Socket } from 'socket.io-client';
 import { PeerConnection, PeerStats, ConnectionState } from './webrtc';
 import { CHANNEL_INPUT, CHANNEL_SYSTEM, HEARTBEAT_INTERVAL, SIGNAL_SERVER, QualityPreset } from './constants';
+import { sha256Hex } from './sha256';
 
 export interface ConnectionEvents {
   onState: (state: ConnectionState) => void;
@@ -107,7 +108,7 @@ export class ConnectionManager {
     });
 
     this.socket.once('connect-challenge', async (data: any) => {
-      const hash = await this.sha256(password + data.nonce);
+      const hash = await sha256Hex(password + data.nonce);
       this.socket!.emit('password-verify', {
         toId: partnerId,
         passwordHash: hash,
@@ -188,7 +189,17 @@ export class ConnectionManager {
       this.peer?.send(CHANNEL_SYSTEM, {
         type: 'system',
         action: 'quality',
-        data: { preset },
+        data: {
+          preset,
+          // Prefer sharp text over smooth motion on mobile.
+          // The host's default is 'maintain-framerate' (drop resolution
+          // first), tuned for desktop where 30fps cursor matters more than
+          // pixel sharpness. On a phone the user is mostly reading/clicking
+          // — they want crisp text and don't notice 15fps. The desktop app
+          // ignores fields it doesn't understand, so this is forwards-safe.
+          degradationPreference: 'maintain-resolution',
+          source: 'mobile',
+        },
       }) ?? false
     );
   }
@@ -244,13 +255,5 @@ export class ConnectionManager {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-  }
-
-  private async sha256(input: string): Promise<string> {
-    const data = new TextEncoder().encode(input);
-    const buf = await crypto.subtle.digest('SHA-256', data);
-    return Array.from(new Uint8Array(buf))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
   }
 }

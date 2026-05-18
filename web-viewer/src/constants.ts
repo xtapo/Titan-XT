@@ -29,9 +29,15 @@ export const HEARTBEAT_INTERVAL = 10_000;
 
 export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low' | 'tiny';
 
-// Default to 'medium' for mobile — phones rarely benefit from 4K and the
-// extra bitrate eats data plans on cellular.
-export const DEFAULT_QUALITY: QualityPreset = 'medium';
+// Default to 'high' (1080p) for mobile.
+//
+// 'medium' (720p) was too soft for sharing IDE / spreadsheet text — letters
+// pixelated on the downsample. '1080p' is the sweet spot on a 6"+ phone:
+// crisp text without 4K's bandwidth penalty, which on cellular forces the
+// encoder to drop bitrate adaptively and the frame turns into mush. If the
+// user picks 'max', the host happily encodes 4K but only LAN/wifi can keep
+// up — see the "tinh chỉnh chất lượng" tip in the README.
+export const DEFAULT_QUALITY: QualityPreset = 'high';
 
 export const QUALITY_LABELS: Record<QualityPreset, string> = {
   max: 'Tối đa (4K)',

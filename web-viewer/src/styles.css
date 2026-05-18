@@ -154,14 +154,42 @@ input {
 
 .server-row {
   margin-top: 18px;
-  font-size: 12px;
-  color: #555570;
+  font-size: 13px;
+  color: #8888a0;
   text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
-.server-row a {
-  color: #8888a0;
-  text-decoration: none;
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.offline {
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.status-dot.connecting {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+.status-dot.online {
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 /* === Session screen === */
@@ -182,6 +210,17 @@ input {
   object-fit: contain;
   outline: none;
   -webkit-touch-callout: none;
+  /* DON'T set image-rendering: crisp-edges / pixelated on a <video>.
+   * Those values disable the browser's bilinear filter, which is great for
+   * pixel art but disastrous for compressed video — H.264 block artifacts
+   * suddenly show up as crunchy 8x8 squares instead of being smoothed by
+   * the default downscale filter. Leave image-rendering at the default
+   * `auto` and let the browser pick the best filter for the source. */
+  /* Promote to its own GPU layer so the rotation transform composites
+   * cleanly instead of triggering a software fallback (which is what
+   * causes blurry text on some Android browsers under CSS rotate). */
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .session-overlay {
@@ -460,4 +499,107 @@ input {
 .toast.success {
   border-color: rgba(34, 197, 94, 0.5);
   color: #22c55e;
+}
+
+/* Virtual cursor — positioned absolutely over the video. The element is
+ * pointer-events:none so it never swallows the touch events that drive it. */
+.virtual-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: rgba(0, 212, 255, 0.85);
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
+  pointer-events: none;
+  z-index: 9;
+  transition: width 0.15s, height 0.15s, background 0.15s;
+  will-change: transform;
+}
+
+.virtual-cursor.drag {
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  margin-top: -11px;
+  background: rgba(124, 58, 237, 0.9);
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.7);
+}
+
+/* === Forced rotation (CSS fallback when screen.orientation.lock is denied) ===
+ *
+ * The session container is rotated 90° and its dimensions are swapped so it
+ * fills the now-landscape viewport. We use top:0/left:100vw + transform-origin
+ * top-left + the rotation, instead of translate(-50%,-50%) — the latter
+ * produces fractional pixel positions on devices where viewport size is odd,
+ * and that fractional offset bleeds into the video as a subpixel-blur layer
+ * on top of WebRTC's normal compression. Integer-aligned origin keeps the
+ * frame sharp.
+ *
+ * Notes:
+ *   - position:fixed + 100vw/100vh so we ignore body scroll quirks on iOS.
+ *   - rotation classes only fire when the device is in the *opposite*
+ *     orientation. If the user already turned the phone, we skip the CSS
+ *     hack and rely on the natural layout.
+ *   - will-change reserves a compositor layer so the GPU keeps the video
+ *     pristine instead of resampling it every frame. */
+.session.rotate-cw {
+  position: fixed;
+  top: 0;
+  left: 100vw;
+  width: 100vh;
+  height: 100vw;
+  transform: rotate(90deg);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.session.rotate-ccw {
+  position: fixed;
+  top: 100vh;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  transform: rotate(-90deg);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* Landscape: shrink the toolbar so it doesn't eat half the screen on a
+ * 6.1" phone in landscape. Chips, gestures, and quality picker inherit the
+ * tighter padding via existing rules — these are the only landscape-specific
+ * changes. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .toolbar-bottom {
+    padding: 4px 8px max(4px, env(safe-area-inset-bottom));
+  }
+  .tool-btn {
+    padding: 4px 2px;
+    font-size: 10px;
+    border-radius: 8px;
+  }
+  .tool-icon {
+    font-size: 14px;
+  }
+  .toolbar-top {
+    padding-top: max(4px, env(safe-area-inset-top));
+    padding-bottom: 4px;
+  }
+  .stat-chip {
+    padding: 2px 8px;
+    font-size: 10px;
+  }
+  .kbd-panel,
+  .quality-panel {
+    bottom: 56px;
+    padding: 6px;
+  }
+  .kbd-key {
+    padding: 6px 2px;
+    font-size: 11px;
+  }
 }

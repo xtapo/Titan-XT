@@ -29,6 +29,10 @@ export interface PeerStats {
   bitrate: number;
   packetLoss: number;
   jitter: number;
+  /** Frame dimensions actually decoded — host may downscale below the preset
+   *  cap when bandwidth is tight, so the viewer can show "actual" vs picked. */
+  frameWidth: number;
+  frameHeight: number;
 }
 
 export interface PeerCallbacks {
@@ -155,7 +159,9 @@ export class PeerConnection {
           fps = 0,
           bitrate = 0,
           packetLoss = 0,
-          jitter = 0;
+          jitter = 0,
+          frameWidth = 0,
+          frameHeight = 0;
         stats.forEach((report: any) => {
           if (report.type === 'candidate-pair' && report.state === 'succeeded') {
             latency = report.currentRoundTripTime
@@ -165,6 +171,8 @@ export class PeerConnection {
           if (report.type === 'inbound-rtp' && report.kind === 'video') {
             fps = report.framesPerSecond || 0;
             jitter = (report.jitter || 0) * 1000;
+            frameWidth = report.frameWidth || 0;
+            frameHeight = report.frameHeight || 0;
             const bytes: number = report.bytesReceived || 0;
             const ts: number = report.timestamp || 0;
             if (lastTs > 0 && ts > lastTs) {
@@ -189,6 +197,8 @@ export class PeerConnection {
           bitrate,
           packetLoss,
           jitter: Math.round(jitter),
+          frameWidth,
+          frameHeight,
         });
       } catch {
         // ignore

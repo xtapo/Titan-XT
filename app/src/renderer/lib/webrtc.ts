@@ -342,8 +342,15 @@ export class PeerConnection {
    * Apply a quality preset to the active video sender + capture track.
    * Called on the HOST when the viewer requests a quality change via the
    * system data channel, and once on initial setup.
+   *
+   * `degradationPreference` overrides the default `maintain-framerate` —
+   * mobile viewers pass `'maintain-resolution'` so the encoder keeps text
+   * sharp and drops fps under bandwidth pressure instead of pixelating.
    */
-  async applyQualityProfile(preset: QualityPreset): Promise<void> {
+  async applyQualityProfile(
+    preset: QualityPreset,
+    degradationPreference?: RTCDegradationPreference,
+  ): Promise<void> {
     const profile = QUALITY_PROFILES[preset];
     if (!profile) return;
 
@@ -358,6 +365,9 @@ export class PeerConnection {
       }
       params.encodings[0].maxBitrate = profile.maxBitrate;
       (params.encodings[0] as any).maxFramerate = profile.maxFramerate;
+      if (degradationPreference) {
+        (params as any).degradationPreference = degradationPreference;
+      }
       await videoSender.setParameters(params);
     } catch (err) {
       console.warn('[WebRTC] Could not update sender params for quality:', err);

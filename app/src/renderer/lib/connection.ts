@@ -1024,7 +1024,12 @@ export class ConnectionManager {
           const preset: QualityPreset = msg.data?.preset;
           if (!preset) return;
           this.currentQuality = preset;
-          this.peer?.applyQualityProfile(preset);
+          // Mobile viewers pass `degradationPreference: 'maintain-resolution'`
+          // so the encoder drops fps before pixelating text. Desktop viewers
+          // omit the field — host falls back to its `maintain-framerate`
+          // default in that case.
+          const degPref = msg.data?.degradationPreference as RTCDegradationPreference | undefined;
+          this.peer?.applyQualityProfile(preset, degPref);
         }
         break;
 
