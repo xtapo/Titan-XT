@@ -1,15 +1,8 @@
 /**
- * Connection Manager — Handles signal-server signaling and WebRTC lifecycle
- *
- * The socket.io connection itself lives in the main process now (see
- * main/signal-client.ts). This module talks to it through a thin IPC bridge
- * that mimics the slice of the socket.io API we use, so the WebRTC + session
- * orchestration below stays unchanged. The reason for the indirection:
- * unattended hosts need the signal connection to survive the renderer being
- * destroyed when the user closes the window to tray.
+ * Connection Manager — Handles Socket.io signaling and WebRTC lifecycle
  */
 
-import { createSignalBridge, SignalSocket } from './signal-bridge';
+import { io, Socket } from 'socket.io-client';
 import { PeerConnection } from './webrtc';
 import { InputHandler } from './input-handler';
 import {
@@ -28,9 +21,12 @@ import {
   CHANNEL_FILE,
   CHANNEL_SYSTEM,
   CHANNEL_ANNOTATION,
+  DEFAULT_SIGNAL_SERVER,
+  HEARTBEAT_INTERVAL,
   DEFAULT_QUALITY,
   DEFAULT_MAX_WIDTH,
   DEFAULT_MAX_HEIGHT,
+  DEFAULT_FPS,
   DEFAULT_CODEC,
   QualityPreset,
   VideoCodec,
@@ -78,12 +74,11 @@ function updateNetworkBadge(rttMs: number, lossFrac: number): void {
 }
 
 export class ConnectionManager {
-  private socket: SignalSocket | null = null;
+  private socket: Socket | null = null;
   private peer: PeerConnection | null = null;
   private inputHandler: InputHandler | null = null;
-  // Heartbeat is owned by main/signal-client.ts now — the renderer doesn't
-  // need its own ping timer because the socket lives in main and stays alive
-  // even when this renderer is destroyed.
+  private heartbeatTimer: number | null = null;
+  private serverUrl: string;
   private machineId: string = '';
   private machineName: string = '';
   private currentQuality: QualityPreset = DEFAULT_QUALITY;
@@ -158,44 +153,39 @@ export class ConnectionManager {
   private idleFpsTimer: number | null = null;
   private boundVisibilityHandler = () => this.onVisibilityChange();
 
-  constructor(_serverUrl?: string) {
-    // _serverUrl is unused — the actual connection is owned by main, which
-    // already read the URL from settings. Argument kept for API compatibility
-    // with any caller that still passes one.
+  constructor(serverUrl?: string) {
+    this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
   }
 
   // === Signal Server Connection ===
-  //
-  // The socket itself lives in main/signal-client.ts. This method just
-  // attaches the renderer-side bridge and wires up the same listeners we
-  // used to register on socket.io directly. machineId/machineName are
-  // already known to main (it registered on the socket itself), so this
-  // call only caches them locally and waits for the bridge to surface a
-  // 'connect' event (synthetic if main was already connected).
 
   async connectToServer(machineId: string, machineName: string): Promise<boolean> {
     this.machineId = machineId;
     this.machineName = machineName;
 
     return new Promise((resolve) => {
-      this.socket = createSignalBridge();
-
-      // Bridge fires 'connect' immediately if main was already connected when
-      // we attached (the common case for an already-running unattended host).
-      let resolved = false;
-      const settle = (ok: boolean) => {
-        if (resolved) return;
-        resolved = true;
-        resolve(ok);
-      };
+      this.socket = io(this.serverUrl, {
+        transports: ['websocket', 'polling'],
+        timeout: 10000,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 3000,
+      });
 
       this.socket.on('connect', () => {
-        console.log('[Conn] Bridge attached — signal server is up');
-        settle(true);
+        console.log('[Conn] Connected to signal server');
+        this.socket!.emit('register', { machineId, machineName });
+        this.startHeartbeat();
+        resolve(true);
       });
 
       this.socket.on('registered', () => {
         console.log('[Conn] Registered with server');
+      });
+
+      this.socket.on('connect_error', (err) => {
+        console.error('[Conn] Server connection error:', err.message);
+        resolve(false);
       });
 
       // Handle incoming connection request (we are the HOST)
@@ -242,12 +232,9 @@ export class ConnectionManager {
       });
 
       this.socket.on('disconnect', () => {
-        console.log('[Conn] Bridge saw signal server disconnect');
+        console.log('[Conn] Disconnected from server');
+        this.stopHeartbeat();
       });
-
-      // Fallback: if the bridge can't reach main / main isn't connected
-      // within 8 seconds, resolve false so the caller surfaces an error.
-      setTimeout(() => settle(this.socket?.connected ?? false), 8_000);
     });
   }
 
@@ -1655,9 +1642,19 @@ export class ConnectionManager {
   }
 
   // === Heartbeat ===
-  // Heartbeat is owned by main/signal-client.ts. Leaving it here would mean
-  // pinging the server twice on every interval — once from main, once from
-  // renderer — which doubles signaling-server load for no benefit.
+
+  private startHeartbeat(): void {
+    this.heartbeatTimer = window.setInterval(() => {
+      this.socket?.emit('ping');
+    }, HEARTBEAT_INTERVAL);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
 
   /**
    * Viewer-side: send an annotation message to the host. The host renders
@@ -1769,8 +1766,7 @@ export class ConnectionManager {
 
   disconnectAll(): void {
     this.disconnect();
-    // Detach the IPC bridge — the underlying socket stays connected in main
-    // so the next renderer that comes up can pick it back up.
+    this.stopHeartbeat();
     this.socket?.disconnect();
     this.socket = null;
   }

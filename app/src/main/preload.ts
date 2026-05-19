@@ -159,27 +159,6 @@ contextBridge.exposeInMainWorld('titanAPI', {
   // === Open external URL via main (shell.openExternal) ===
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
 
-  // === Signal server (socket.io lives in main; renderer talks to it via IPC) ===
-  // Renderer subscribes once on init and routes incoming server events into
-  // the connection manager. The socket itself stays alive in main even after
-  // the renderer is destroyed (window close → tray) so unattended hosts keep
-  // accepting incoming sessions without keeping the renderer process around.
-  signal: {
-    emit: (event: string, ...args: any[]) =>
-      ipcRenderer.invoke('signal:emit', event, ...args) as Promise<{ ok: boolean; reason?: string }>,
-    isConnected: () => ipcRenderer.invoke('signal:isConnected') as Promise<boolean>,
-    ready: () =>
-      ipcRenderer.invoke('signal:ready') as Promise<{ ok: boolean; connected: boolean }>,
-    detach: () => ipcRenderer.invoke('signal:detach') as Promise<{ ok: boolean }>,
-    onEvent: (cb: (event: string, ...args: any[]) => void) => {
-      const handler = (_e: any, payload: { event: string; args: any[] }) => {
-        try { cb(payload.event, ...(payload.args || [])); } catch (err) { console.error('[signal:event cb]', err); }
-      };
-      ipcRenderer.on('signal:event', handler);
-      return () => ipcRenderer.off('signal:event', handler);
-    },
-  },
-
   // === Connection Events (Main → Renderer) ===
   on: (channel: string, callback: (...args: any[]) => void) => {
     const validChannels = [
