@@ -2,16 +2,13 @@
  * InputHandler — Captures mouse/keyboard events from the video element
  * and sends them via data channel to the remote host for simulation.
  *
- * Mouse modes (toggled with Right-Ctrl, like VMware/Parsec):
- *   - Absolute (default): mouse moves on the video → host cursor jumps to
- *     that ratio of its screen. Simple, works without any browser API
- *     gating, but bypasses the host's native pointer acceleration so the
- *     feel doesn't match a local cursor.
- *   - Relative + Pointer Lock: e.movementX/Y captures raw OS-acceleration
- *     adjusted deltas; the host walks its real cursor by that delta. Result:
- *     the cursor under your hand feels like your local cursor — same speed,
- *     same accel curve — because the viewer's OS already applied them.
- *     Click on the video to lock; press ESC or Right-Ctrl to release.
+ * Mouse model: absolute positioning. Each mousemove is translated to a
+ * 0..1 ratio of the rendered video frame and shipped immediately on the
+ * unreliable+unordered input channel. We deliberately don't batch via
+ * requestAnimationFrame — the rAF-coalesced send used in earlier versions
+ * added ~16 ms of input latency on every move that users could feel as
+ * "heavy" cursor. The data channel happily handles 240 Hz; the host's
+ * input executor processes the latest position and skips no-op moves.
  *
  * Clipboard sync:
  *   Ctrl+V → read viewer clipboard → send to host via system channel → host
@@ -28,27 +25,18 @@ export class InputHandler {
   private videoEl: HTMLVideoElement;
   private peer: PeerConnection;
   private enabled: boolean = false;
+  // Last known cursor position in normalized 0..1 coords. Cached so click /
+  // wheel events that fire without a preceding move (rare on desktop, but
+  // happens if the user clicks immediately after focus return) still carry
+  // a reasonable position to the host.
+  private lastX: number = 0.5;
+  private lastY: number = 0.5;
   // Track which keys / buttons the viewer is currently holding so we can
   // release them all if focus is lost. Without this, alt-tabbing away while
   // holding Ctrl leaves the host with a stuck Ctrl — every subsequent click
   // becomes Ctrl-click and the session feels frozen.
   private heldKeys: Set<string> = new Set();
   private heldButtons: Set<'left' | 'right' | 'middle'> = new Set();
-
-  // Pointer-lock relative-motion mode. When the user clicks the video we
-  // request pointer lock; movementX/Y then becomes raw OS-acceleration
-  // adjusted deltas (already shaped by Windows' "Enhance pointer precision"
-  // / macOS pointer accel) so the host cursor matches the local feel.
-  private pointerLocked = false;
-  // Viewer-side prediction of the remote cursor in normalized coords (0..1
-  // of the host screen). Used for any 'down'/'up'/'click' messages we still
-  // need to send during pointer-lock — those carry an x/y the host ignores
-  // but reasonable values keep diagnostics readable. Starts at center;
-  // updated by both absolute moves and accumulated relative deltas.
-  private predictedX = 0.5;
-  private predictedY = 0.5;
-  // Hint overlay element shown when not locked, so the user knows to click.
-  private hintEl: HTMLDivElement | null = null;
 
   constructor(videoEl: HTMLVideoElement, peer: PeerConnection) {
     this.videoEl = videoEl;
@@ -86,13 +74,6 @@ export class InputHandler {
     // Keep focus
     this.videoEl.addEventListener('click', () => this.videoEl.focus());
 
-    // Pointer-lock — relative-motion mode for matching local mouse feel.
-    document.addEventListener('pointerlockchange', this.onPointerLockChange);
-    document.addEventListener('pointerlockerror', this.onPointerLockError);
-
-    this.ensureHint();
-    this.updateHintVisibility();
-
     // Release stuck modifiers when the viewer window loses focus —
     // alt-tab, popup, or notification on the viewer side leaves the host
     // with phantom-held keys without this.
@@ -109,13 +90,6 @@ export class InputHandler {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
 
-    // Drop pointer lock if held, so the user's cursor isn't stuck inside
-    // the video element after the session ends.
-    if (document.pointerLockElement === this.videoEl) {
-      document.exitPointerLock?.();
-    }
-    this.pointerLocked = false;
-
     // Clean release any keys/buttons still tracked as held so the host
     // doesn't end up with stuck modifiers after the viewer disconnects.
     this.onWindowBlur();
@@ -128,120 +102,41 @@ export class InputHandler {
     this.videoEl.removeEventListener('wheel', this.onWheel);
     this.videoEl.removeEventListener('keydown', this.onKeyDown);
     this.videoEl.removeEventListener('keyup', this.onKeyUp);
-    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
-    document.removeEventListener('pointerlockerror', this.onPointerLockError);
     window.removeEventListener('blur', this.onWindowBlur);
     this.videoEl.removeEventListener('blur', this.onWindowBlur);
-
-    if (this.hintEl) {
-      this.hintEl.remove();
-      this.hintEl = null;
-    }
 
     console.log('[Input] Handler disabled');
   }
 
-  // === Pointer Lock ===
-
-  /** Ask the browser for pointer lock on the video element. Idempotent. */
-  private requestLock(): void {
-    if (!this.enabled) return;
-    if (document.pointerLockElement === this.videoEl) return;
-    try {
-      this.videoEl.requestPointerLock?.();
-    } catch (err) {
-      console.warn('[Input] requestPointerLock failed:', err);
-    }
-  }
-
-  private onPointerLockChange = () => {
-    this.pointerLocked = document.pointerLockElement === this.videoEl;
-    this.updateHintVisibility();
-    if (!this.pointerLocked) {
-      // Lock dropped — release any held mouse buttons so a drag interrupted
-      // by ESC doesn't leave the host with select-mode active.
-      const lastX = this.predictedX;
-      const lastY = this.predictedY;
-      for (const button of this.heldButtons) {
-        this.peer.send(CHANNEL_INPUT, {
-          type: 'mouse', action: 'up', x: lastX, y: lastY, button,
-        } as MouseMessage);
-      }
-      this.heldButtons.clear();
-    }
-  };
-
-  private onPointerLockError = () => {
-    console.warn('[Input] Pointer lock denied — falling back to absolute mode');
-    this.pointerLocked = false;
-    this.updateHintVisibility();
-  };
-
-  /** Floating hint shown over the video when not locked. */
-  private ensureHint(): void {
-    if (this.hintEl) return;
-    const div = document.createElement('div');
-    div.className = 'pointer-lock-hint';
-    div.textContent = 'Nhấn vào đây để bắt chuột (ESC để thoát)';
-    div.style.cssText =
-      'position:absolute;top:12px;left:50%;transform:translateX(-50%);' +
-      'background:rgba(0,0,0,0.66);color:#fff;font-size:12px;padding:6px 14px;' +
-      'border-radius:14px;pointer-events:none;z-index:50;backdrop-filter:blur(4px);' +
-      'opacity:0;transition:opacity .25s;font-weight:500;letter-spacing:.2px;';
-    const wrapper = this.videoEl.parentElement;
-    if (wrapper) {
-      // Make sure the hint can be positioned inside the wrapper.
-      if (getComputedStyle(wrapper).position === 'static') {
-        wrapper.style.position = 'relative';
-      }
-      wrapper.appendChild(div);
-    } else {
-      document.body.appendChild(div);
-    }
-    this.hintEl = div;
-  }
-
-  private updateHintVisibility(): void {
-    if (!this.hintEl) return;
-    this.hintEl.style.opacity = this.pointerLocked || !this.enabled ? '0' : '1';
-  }
-
   /**
-   * Get relative coordinates (0-1) from mouse event on video
+   * Get relative coordinates (0-1) from mouse event on video, accounting
+   * for the letterboxing object-fit:contain places on the rendered frame.
    */
   private getRelativeCoords(e: MouseEvent): { x: number; y: number } {
     const rect = this.videoEl.getBoundingClientRect();
-    const { w: renderWidth, h: renderHeight, offX, offY } = this.getRenderedSize(rect);
-    const localX = e.clientX - rect.left - offX;
-    const localY = e.clientY - rect.top - offY;
-    return {
-      x: Math.max(0, Math.min(1, localX / renderWidth)),
-      y: Math.max(0, Math.min(1, localY / renderHeight)),
-    };
-  }
-
-  /**
-   * Account for object-fit: contain — return the size of the actual video
-   * pixels inside the element, plus the letterbox offset. Shared between
-   * absolute coord mapping and relative-delta normalization so a movement
-   * of N px maps to the same fraction in both modes.
-   */
-  private getRenderedSize(rect: DOMRect): { w: number; h: number; offX: number; offY: number } {
     const videoWidth = this.videoEl.videoWidth || rect.width;
     const videoHeight = this.videoEl.videoHeight || rect.height;
     const videoAspect = videoWidth / videoHeight;
     const elementAspect = rect.width / rect.height;
-    let w: number, h: number, offX = 0, offY = 0;
+
+    let renderWidth: number, renderHeight: number;
+    let offsetX = 0, offsetY = 0;
     if (videoAspect > elementAspect) {
-      w = rect.width;
-      h = rect.width / videoAspect;
-      offY = (rect.height - h) / 2;
+      renderWidth = rect.width;
+      renderHeight = rect.width / videoAspect;
+      offsetY = (rect.height - renderHeight) / 2;
     } else {
-      h = rect.height;
-      w = rect.height * videoAspect;
-      offX = (rect.width - w) / 2;
+      renderHeight = rect.height;
+      renderWidth = rect.height * videoAspect;
+      offsetX = (rect.width - renderWidth) / 2;
     }
-    return { w, h, offX, offY };
+
+    const localX = e.clientX - rect.left - offsetX;
+    const localY = e.clientY - rect.top - offsetY;
+    return {
+      x: Math.max(0, Math.min(1, localX / renderWidth)),
+      y: Math.max(0, Math.min(1, localY / renderHeight)),
+    };
   }
 
   private getButton(e: MouseEvent): 'left' | 'right' | 'middle' {
@@ -274,74 +169,35 @@ export class InputHandler {
 
   // === Mouse Handlers ===
 
-  /**
-   * Mouse move dispatch. Two paths share the same handler so we can react
-   * instantly when the user toggles pointer-lock mid-session:
-   *
-   *   - Locked: e.movementX/Y holds OS-acceleration-adjusted deltas (Windows
-   *     "Enhance pointer precision" / macOS pointer accel already baked in).
-   *     We normalize by the rendered video size and ship as 'move-rel'. The
-   *     host walks its real cursor by that fraction, so the speed and accel
-   *     curve track the viewer's local mouse exactly.
-   *
-   *   - Not locked: fall back to absolute positioning. The cursor jumps to
-   *     wherever the pointer is on the video — useful before the user has
-   *     clicked to engage lock, or after pressing ESC.
-   *
-   * No rAF batching here. The host data channel is unreliable+unordered,
-   * priority='high'; flooding lets the latest delta arrive ASAP. The 16 ms
-   * round-trip rAF added in v1.x was a measurable contributor to the
-   * "heavy" feel users reported.
-   */
   private onMouseMove = (e: MouseEvent) => {
-    if (this.pointerLocked) {
-      const rect = this.videoEl.getBoundingClientRect();
-      const renderSize = this.getRenderedSize(rect);
-      if (renderSize.w <= 0 || renderSize.h <= 0) return;
-      const dx = e.movementX / renderSize.w;
-      const dy = e.movementY / renderSize.h;
-      if (dx === 0 && dy === 0) return;
-      this.predictedX = Math.max(0, Math.min(1, this.predictedX + dx));
-      this.predictedY = Math.max(0, Math.min(1, this.predictedY + dy));
-      const msg: MouseMessage = {
-        type: 'mouse', action: 'move-rel',
-        x: 0, y: 0, deltaX: dx, deltaY: dy,
-      };
-      this.peer.send(CHANNEL_INPUT, msg);
-      return;
-    }
-
     const { x, y } = this.getRelativeCoords(e);
-    this.predictedX = x;
-    this.predictedY = y;
+    this.lastX = x;
+    this.lastY = y;
     const msg: MouseMessage = { type: 'mouse', action: 'move', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onMouseDown = (e: MouseEvent) => {
-    // Click-to-lock when not locked yet. Skip the lock request if the host
-    // is in view-only mode — the input handler would already be disabled in
-    // that case but defending here keeps the lock indicator out of weird
-    // states if the connection bounces.
-    if (!this.pointerLocked) {
-      this.requestLock();
-    }
+    const { x, y } = this.getRelativeCoords(e);
+    this.lastX = x;
+    this.lastY = y;
     const button = this.getButton(e);
     this.heldButtons.add(button);
     const msg: MouseMessage = {
-      type: 'mouse', action: 'down',
-      x: this.predictedX, y: this.predictedY,
+      type: 'mouse', action: 'down', x, y,
       button,
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onMouseUp = (e: MouseEvent) => {
+    const { x, y } = this.getRelativeCoords(e);
+    this.lastX = x;
+    this.lastY = y;
     const button = this.getButton(e);
     this.heldButtons.delete(button);
     const msg: MouseMessage = {
-      type: 'mouse', action: 'up',
-      x: this.predictedX, y: this.predictedY,
+      type: 'mouse', action: 'up', x, y,
       button,
     };
     this.peer.send(CHANNEL_INPUT, msg);
@@ -349,27 +205,29 @@ export class InputHandler {
 
   private onDblClick = (e: MouseEvent) => {
     e.preventDefault();
-    const msg: MouseMessage = {
-      type: 'mouse', action: 'dblclick',
-      x: this.predictedX, y: this.predictedY,
-    };
+    const { x, y } = this.getRelativeCoords(e);
+    this.lastX = x;
+    this.lastY = y;
+    const msg: MouseMessage = { type: 'mouse', action: 'dblclick', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
-    const msg: MouseMessage = {
-      type: 'mouse', action: 'contextmenu',
-      x: this.predictedX, y: this.predictedY,
-    };
+    const { x, y } = this.getRelativeCoords(e);
+    this.lastX = x;
+    this.lastY = y;
+    const msg: MouseMessage = { type: 'mouse', action: 'contextmenu', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
+    const { x, y } = this.getRelativeCoords(e);
+    this.lastX = x;
+    this.lastY = y;
     const msg: MouseMessage = {
-      type: 'mouse', action: 'scroll',
-      x: this.predictedX, y: this.predictedY,
+      type: 'mouse', action: 'scroll', x, y,
       deltaX: Math.sign(e.deltaX) * 3,
       deltaY: Math.sign(e.deltaY) * 3,
     };
@@ -444,13 +302,9 @@ export class InputHandler {
     }
     this.heldKeys.clear();
 
-    // Release any held mouse buttons at the last known coordinates so a
-    // drag interrupted by a popup doesn't leave the host in select-mode.
-    const lastX = this.predictedX;
-    const lastY = this.predictedY;
     for (const button of this.heldButtons) {
       this.peer.send(CHANNEL_INPUT, {
-        type: 'mouse', action: 'up', x: lastX, y: lastY, button,
+        type: 'mouse', action: 'up', x: this.lastX, y: this.lastY, button,
       } as MouseMessage);
     }
     this.heldButtons.clear();

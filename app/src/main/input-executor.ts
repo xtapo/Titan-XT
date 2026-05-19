@@ -110,36 +110,6 @@ export async function executeMouse(
   }
 
   const { width, height } = await getScreenPixelSize(opts.screenSizeFallback);
-
-  // For relative-motion moves we don't trust the absolute (x, y) — instead
-  // we walk the cursor by the supplied delta from where the host's actual
-  // cursor is now. Falling back to the last *commanded* position when the
-  // OS-reported one isn't available; commanded position drifts a hair under
-  // window-snap edge clamping but never enough to feel wrong.
-  if (msg.action === 'move-rel') {
-    const dxFrac = msg.deltaX || 0;
-    const dyFrac = msg.deltaY || 0;
-    let curX = lastPos.x;
-    let curY = lastPos.y;
-    if (curX < 0 || curY < 0) {
-      try {
-        const pos = await nutMouse.getPosition();
-        curX = pos.x;
-        curY = pos.y;
-      } catch {
-        curX = Math.round(width / 2);
-        curY = Math.round(height / 2);
-      }
-    }
-    const nx = Math.min(width - 1, Math.max(0, Math.round(curX + dxFrac * width)));
-    const ny = Math.min(height - 1, Math.max(0, Math.round(curY + dyFrac * height)));
-    if (nx !== lastPos.x || ny !== lastPos.y) {
-      await nutMouse.setPosition({ x: nx, y: ny });
-      lastPos = { x: nx, y: ny };
-    }
-    return;
-  }
-
   const x = Math.min(width - 1, Math.max(0, Math.round(msg.x * width)));
   const y = Math.min(height - 1, Math.max(0, Math.round(msg.y * height)));
 

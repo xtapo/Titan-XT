@@ -3,20 +3,12 @@
 // --- Mouse Events ---
 export interface MouseMessage {
   type: 'mouse';
-  action: 'move' | 'move-rel' | 'down' | 'up' | 'click' | 'dblclick' | 'contextmenu' | 'scroll';
-  /** X coordinate as ratio 0-1 of screen width.
-   *  For 'move-rel' this field is unused (host derives position from its
-   *  own running cursor + dx/dy). Senders should set it to 0 to satisfy the
-   *  type; receivers must ignore it on 'move-rel'. */
+  action: 'move' | 'down' | 'up' | 'click' | 'dblclick' | 'contextmenu' | 'scroll';
+  /** X coordinate as ratio 0-1 of screen width */
   x: number;
-  /** Y coordinate as ratio 0-1 of screen height. See note on x. */
+  /** Y coordinate as ratio 0-1 of screen height */
   y: number;
   button?: 'left' | 'right' | 'middle';
-  /** For 'scroll': wheel ticks (positive = down/right).
-   *  For 'move-rel': normalized cursor delta — fraction of host screen width
-   *  to advance the cursor by. Captured on the viewer via Pointer Lock from
-   *  e.movementX divided by the rendered video width, so the host pointer
-   *  speed already reflects the viewer's OS acceleration setting. */
   deltaX?: number;
   deltaY?: number;
 }
