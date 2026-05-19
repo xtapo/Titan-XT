@@ -4,89 +4,117 @@ import { executeInputMessage } from './input-executor';
 import { getPipeClient } from './pipe-client';
 
 /**
- * InputSimulator — IPC handler that prefers forwarding to the SYSTEM
- * Worker (so input lands at high IL and is not blocked by UIPI when the
- * foreground app is UAC-elevated). Falls back to executing in-process
- * when the service isn't installed yet.
+ * InputSimulator — IPC handler that forwards input to the SYSTEM Worker
+ * pipe when available, falling back to in-process nut.js otherwise.
  *
- * Mouse-move coalescing: a high-poll mouse on a fast viewer can push
- * 240+ Hz of move events onto the data channel. Each one used to traverse
- * IPC → pipe → nut.js setPosition synchronously, building a queue when
- * any single hop took longer than the inter-event spacing. The queue
- * showed up as "cursor lags behind the finger" — even on LAN. We now
- * keep at most one pending move at a time and let newer moves overwrite
- * the previous, which is exactly the semantics the host wants for an
- * absolute-positioning protocol: only the latest position matters.
+ * Smoothing for absolute-position mouse moves:
+ * The viewer ships ratio coords on every mousemove (often 240+ Hz). The
+ * naive "set to latest target" path was physically correct but felt
+ * jittery on slow drags because the host cursor stepped pixel-to-pixel
+ * instead of gliding. We now run a 125 Hz lerp loop that blends the
+ * tracked position toward the latest target by LERP_FACTOR per tick.
+ * Flicks (>FLICK_THRESHOLD of screen) snap instantly so big gestures
+ * stay responsive; tiny residuals (<SNAP_RATIO) also snap so the loop
+ * terminates instead of chasing floating-point dust.
  *
- * Button events (down / up / click / dblclick / contextmenu / scroll)
- * still go through serially, because dropping one of those would lose a
- * click. They drain the queued move first so a fast move-then-click
- * never lands at the previous position.
+ * Buttons / keys / scroll drain through a shared chain so a click can
+ * never overlap an in-flight lerp step (which would race nut.js's
+ * internal lastPos cache).
  */
 
-let pendingMove: MouseMessage | null = null;
-let drainInFlight = false;
+const TICK_MS = 8;
+const LERP_FACTOR = 0.4;
+const SNAP_RATIO = 0.0008;
+const FLICK_THRESHOLD = 0.15;
 
-async function drainPendingMove(send: (m: MouseMessage) => Promise<void>): Promise<void> {
-  if (drainInFlight) return;
-  drainInFlight = true;
+let targetMove: MouseMessage | null = null;
+let currentX: number | null = null;
+let currentY: number | null = null;
+let interpolating = false;
+
+let sendChain: Promise<void> = Promise.resolve();
+
+function chainSend(fn: () => Promise<void>): Promise<void> {
+  const p = sendChain.then(fn, fn);
+  sendChain = p.catch(() => {});
+  return p;
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+async function runInterpolation(send: (m: MouseMessage) => Promise<void>): Promise<void> {
+  if (interpolating) return;
+  interpolating = true;
   try {
-    while (pendingMove) {
-      const m = pendingMove;
-      pendingMove = null;
-      try {
-        await send(m);
-      } catch {
-        // Best-effort — a single failed move shouldn't poison subsequent ones.
+    while (targetMove) {
+      const t = targetMove;
+      const tx = t.x;
+      const ty = t.y;
+
+      if (currentX === null || currentY === null) {
+        currentX = tx;
+        currentY = ty;
+        try { await chainSend(() => send({ ...t, x: tx, y: ty })); } catch {}
+        if (targetMove === t) targetMove = null;
+        continue;
       }
+
+      const dx = tx - currentX;
+      const dy = ty - currentY;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist <= SNAP_RATIO || dist >= FLICK_THRESHOLD) {
+        currentX = tx;
+        currentY = ty;
+        try { await chainSend(() => send({ ...t, x: tx, y: ty })); } catch {}
+        if (targetMove === t) targetMove = null;
+        continue;
+      }
+
+      currentX += dx * LERP_FACTOR;
+      currentY += dy * LERP_FACTOR;
+      const stepX = currentX;
+      const stepY = currentY;
+      try { await chainSend(() => send({ ...t, x: stepX, y: stepY })); } catch {}
+      await sleep(TICK_MS);
     }
   } finally {
-    drainInFlight = false;
+    interpolating = false;
   }
 }
 
 export function setupInputSimulator(): void {
   const pipe = getPipeClient();
 
-  /** Send one input message, preferring the SYSTEM worker pipe. */
   const sendOne = async (msg: MouseMessage | KeyMessage): Promise<void> => {
     if (process.platform === 'win32' && pipe.worthTrying()) {
       try {
         const res = await pipe.simulateInput(msg);
         if (res.ok) return;
       } catch {
-        // Pipe down — fall through to in-process.
+        // Pipe down — fall through.
       }
     }
     await executeInputMessage(msg);
   };
 
   ipcMain.handle('input:simulate', async (_event, msg: MouseMessage | KeyMessage) => {
-    // Mouse-move: only the latest position matters. Stash and let the drain
-    // loop pick it up; if a drain is already running and a new move arrives
-    // mid-flight, it overwrites pendingMove and the in-flight setPosition
-    // finishes, then the loop sees the new value and ships it.
     if (msg.type === 'mouse' && msg.action === 'move') {
-      pendingMove = msg;
-      // Don't await — return immediately so the data-channel handler can
-      // process the next packet without back-pressure from the worker.
-      void drainPendingMove(sendOne);
+      targetMove = msg;
+      void runInterpolation(sendOne);
       return { success: true };
     }
 
-    // Button / key / scroll: flush any queued move first so a click never
-    // lands at the previous position, then send synchronously.
-    if (pendingMove) {
-      const flush = pendingMove;
-      pendingMove = null;
-      try {
-        await sendOne(flush);
-      } catch {
-        // ignore
-      }
+    // Button / scroll: cancel any pending lerp, snap the tracker to the
+    // event's own coords so subsequent moves lerp from here, then queue
+    // the event behind any in-flight lerp step.
+    if (msg.type === 'mouse') {
+      targetMove = null;
+      currentX = msg.x;
+      currentY = msg.y;
     }
     try {
-      await sendOne(msg);
+      await chainSend(() => sendOne(msg));
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
