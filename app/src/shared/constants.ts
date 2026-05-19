@@ -73,7 +73,7 @@ export const ADAPTIVE_SAMPLE_INTERVAL_MS = 2_000;
 export const ADAPTIVE_DEBOUNCE_SAMPLES = 3;   // require N consecutive samples before changing tier
 
 // Quality presets — viewer picks one, host re-applies sender params + capture constraints
-export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low' | 'tiny';
+export type QualityPreset = 'max' | 'ultra' | 'responsive' | 'high' | 'medium' | 'low' | 'tiny';
 
 export interface QualityProfile {
   label: string;
@@ -97,6 +97,13 @@ export const QUALITY_PROFILES: Record<QualityPreset, QualityProfile> = {
     maxHeight: 1440,
     maxBitrate: 12_000_000,
     maxFramerate: 30,
+  },
+  responsive: {
+    label: 'Mượt (1080p · 10 Mbps · 60fps)',
+    maxWidth: 1920,
+    maxHeight: 1080,
+    maxBitrate: 10_000_000,
+    maxFramerate: 60,
   },
   high: {
     label: 'Cao (1080p · 6 Mbps · 30fps)',

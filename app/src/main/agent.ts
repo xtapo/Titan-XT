@@ -205,26 +205,44 @@ function setupIPC(): void {
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized());
 
   // === Unattended auto-launch ===
-  // Register the binary in the OS auto-start hook (Login Items on macOS,
-  // Run registry key on Windows, ~/.config/autostart on Linux). We pass
-  // `--hidden` so the launched instance starts in tray-only mode and the
-  // user doesn't see a window pop up at every login.
-  ipcMain.handle('autolaunch:set', (_event, enabled: boolean) => {
-    try {
-      app.setLoginItemSettings({
-        openAtLogin: !!enabled,
-        openAsHidden: true,
-        args: enabled ? ['--hidden'] : [],
-        // path defaults to process.execPath which is what we want — the
-        // packaged exe / .app bundle, not Electron itself.
-      });
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
+  // On Windows with requireAdministrator, setLoginItemSettings won't work —
+  // UAC blocks auto-elevation at logon. We use a Scheduled Task with Logon
+  // trigger + HighestAvailable instead. On macOS/Linux, fall back to the
+  // built-in setLoginItemSettings.
+  ipcMain.handle('autolaunch:set', async (_event, enabled: boolean) => {
+    if (process.platform === 'win32') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { setAutoLaunchWindows } = require('./auto-launch-windows');
+        return await setAutoLaunchWindows(enabled, process.execPath);
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
+    } else {
+      // macOS / Linux: use Electron's built-in Login Items / autostart
+      try {
+        app.setLoginItemSettings({
+          openAtLogin: !!enabled,
+          openAsHidden: true,
+          args: enabled ? ['--hidden'] : [],
+        });
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+      }
     }
   });
 
-  ipcMain.handle('autolaunch:get', () => {
+  ipcMain.handle('autolaunch:get', async () => {
+    if (process.platform === 'win32') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getAutoLaunchWindows } = require('./auto-launch-windows');
+        return await getAutoLaunchWindows();
+      } catch {
+        return { enabled: false, hidden: false };
+      }
+    }
     try {
       const s = app.getLoginItemSettings();
       return { enabled: !!s.openAtLogin, hidden: !!s.openAsHidden };

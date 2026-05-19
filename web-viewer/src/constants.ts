@@ -27,7 +27,7 @@ export const CHANNEL_ANNOTATION = 'annotation';
 
 export const HEARTBEAT_INTERVAL = 10_000;
 
-export type QualityPreset = 'max' | 'ultra' | 'high' | 'medium' | 'low' | 'tiny';
+export type QualityPreset = 'max' | 'ultra' | 'responsive' | 'high' | 'medium' | 'low' | 'tiny';
 
 // Default to 'high' (1080p) for mobile.
 //
@@ -42,6 +42,7 @@ export const DEFAULT_QUALITY: QualityPreset = 'high';
 export const QUALITY_LABELS: Record<QualityPreset, string> = {
   max: 'Tối đa (4K)',
   ultra: 'Siêu nét (1440p)',
+  responsive: 'Mượt (1080p · 60fps)',
   high: 'Cao (1080p)',
   medium: 'Trung bình (720p)',
   low: 'Thấp (540p)',

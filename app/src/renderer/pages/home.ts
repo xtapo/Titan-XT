@@ -644,11 +644,11 @@ async function openSettingsModal() {
           }
         }
 
-        // Sync OS auto-launch hook with the user's choice. Only register for
-        // launch-at-login when unattended is on AND the user opted in — we
-        // don't want to silently start the app for someone who just enabled
-        // a password but expected to launch it manually.
-        const wantAutoStart = wantOn && !!unAutoStart?.checked;
+        // Sync OS auto-launch hook with the user's choice. Auto-start is
+        // independent of the unattended password — a user may want the app
+        // to come up in the tray on every login regardless of whether they
+        // also enabled remote-without-prompt access.
+        const wantAutoStart = !!unAutoStart?.checked;
         await window.titanAPI?.autoLaunch?.set?.(wantAutoStart);
 
         // Clear the password field so it isn't sitting in the DOM after save.
@@ -662,13 +662,11 @@ async function openSettingsModal() {
 
     // Show / hide the password row based on the enabled toggle so the UI
     // makes it obvious that ticking the box is what unlocks the password
-    // input — not the other way around.
+    // input — not the other way around. Auto-start stays independent.
     document.getElementById('settings-unattended-enabled')?.addEventListener('change', (e) => {
       const checked = (e.target as HTMLInputElement).checked;
       const row = document.getElementById('settings-unattended-password-row');
       if (row) row.style.display = checked ? '' : 'none';
-      const autoRow = document.getElementById('settings-unattended-autostart') as HTMLInputElement | null;
-      if (!checked && autoRow) autoRow.checked = false;
     });
   }
 

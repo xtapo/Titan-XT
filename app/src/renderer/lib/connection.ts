@@ -1002,7 +1002,7 @@ export class ConnectionManager {
     // forms — ignore those samples so we don't false-positive an "upgrade".
     if (rttMs <= 0) return;
 
-    const order: QualityPreset[] = ['max', 'ultra', 'high', 'medium', 'low', 'tiny'];
+    const order: QualityPreset[] = ['max', 'ultra', 'responsive', 'high', 'medium', 'low', 'tiny'];
     const idx = order.indexOf(this.currentQuality);
     if (idx === -1) return;
 

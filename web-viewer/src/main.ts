@@ -213,7 +213,7 @@ function renderSession(conn: ConnectionManager) {
       </div>
 
       <div class="quality-panel" id="qualityPanel">
-        ${(['max', 'ultra', 'high', 'medium', 'low', 'tiny'] as QualityPreset[])
+        ${(['max', 'ultra', 'responsive', 'high', 'medium', 'low', 'tiny'] as QualityPreset[])
           .map(
             (q) => `<button class="quality-option" data-quality="${q}">${QUALITY_LABELS[q]}</button>`,
           )
