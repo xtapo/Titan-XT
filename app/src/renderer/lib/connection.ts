@@ -77,7 +77,7 @@ export class ConnectionManager {
   // Suppresses auto-reconnect on the closure cascade that follows.
   private intentionalClose: boolean = false;
   // File transfer: incoming chunks are buffered until 'complete' arrives.
-  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number; targetHint?: 'desktop' }> = new Map();
+  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number; totalChunks: number; targetHint?: 'desktop' }> = new Map();
 
   // === Adaptive quality (viewer-side) ===
   // The viewer watches RTT + packet loss and asks the host to step the
@@ -362,7 +362,11 @@ export class ConnectionManager {
         video: {
           width: { max: DEFAULT_MAX_WIDTH },
           height: { max: DEFAULT_MAX_HEIGHT },
-          frameRate: { max: DEFAULT_FPS },
+          // Capture at the highest fps any preset needs (60 for 'responsive').
+          // applyQualityProfile will clamp down to 30/15 for lower presets via
+          // track.applyConstraints. Starting high and clamping down works reliably;
+          // starting low and trying to bump up often fails on some platforms.
+          frameRate: { max: 60 },
         },
       });
 
@@ -666,6 +670,8 @@ export class ConnectionManager {
 
     let offset = 0;
     let chunkIndex = 0;
+    const channel = (this.peer as any)?.dataChannels?.get?.(CHANNEL_FILE) as RTCDataChannel | undefined;
+
     while (offset < fileSize) {
       const remaining = fileSize - offset;
       const size = Math.min(CHUNK_SIZE, remaining);
@@ -673,6 +679,8 @@ export class ConnectionManager {
       if (base64 == null) {
         updateFileProgress(fileId, 0, 'error');
         showToast(`Lỗi đọc file ${fileName}`, 'error');
+        // Notify receiver so it doesn't wait forever.
+        this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
         return;
       }
 
@@ -683,17 +691,27 @@ export class ConnectionManager {
       };
 
       // Backpressure: pause when the SCTP send buffer is congested.
-      // Without this, large files crash the data channel.
-      const channel = (this.peer as any)?.dataChannels?.get?.(CHANNEL_FILE) as RTCDataChannel | undefined;
+      // Without this, large files crash the data channel. Add a timeout
+      // so we don't hang forever if the channel is stuck.
       if (channel) {
-        while (channel.bufferedAmount > 1_000_000) {
-          await new Promise((r) => setTimeout(r, 50));
+        let waited = 0;
+        while (channel.bufferedAmount > 1_000_000 && waited < 30_000) {
+          await new Promise((r) => setTimeout(r, 100));
+          waited += 100;
+        }
+        if (waited >= 30_000) {
+          updateFileProgress(fileId, 0, 'error');
+          showToast(`Timeout gửi ${fileName} — kênh bị tắc`, 'error');
+          this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
+          return;
         }
       }
 
       if (!this.peer.send(CHANNEL_FILE, chunk)) {
         updateFileProgress(fileId, 0, 'error');
         showToast(`Mất kết nối khi gửi ${fileName}`, 'error');
+        // Notify receiver so it doesn't wait forever.
+        this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
         return;
       }
 
@@ -701,6 +719,16 @@ export class ConnectionManager {
       chunkIndex += 1;
       const percent = Math.round((offset / fileSize) * 100);
       updateFileProgress(fileId, percent, 'sending');
+    }
+
+    // Flush bufferedAmount before sending 'complete' so all chunks are
+    // guaranteed to arrive before the receiver tries to reassemble.
+    if (channel) {
+      let waited = 0;
+      while (channel.bufferedAmount > 0 && waited < 10_000) {
+        await new Promise((r) => setTimeout(r, 50));
+        waited += 50;
+      }
     }
 
     this.peer.send(CHANNEL_FILE, {
@@ -724,6 +752,7 @@ export class ConnectionManager {
         size: msg.fileSize,
         chunks: new Array(0),
         received: 0,
+        totalChunks: 0,
         targetHint: msg.targetHint,
       });
       addFileEntry(msg.fileId, msg.fileName, msg.fileSize, 'receiving');
@@ -733,6 +762,11 @@ export class ConnectionManager {
     if (msg.action === 'chunk') {
       const entry = this.incomingFiles.get(msg.fileId);
       if (!entry) return;
+      // Capture totalChunks from the first chunk message so we can verify
+      // completeness before saving.
+      if (entry.totalChunks === 0) {
+        entry.totalChunks = msg.totalChunks;
+      }
       // Store chunk by index so out-of-order arrivals (shouldn't happen on
       // ordered channels, but be defensive) still reassemble correctly.
       entry.chunks[msg.chunkIndex] = msg.data;
@@ -746,6 +780,29 @@ export class ConnectionManager {
       const entry = this.incomingFiles.get(msg.fileId);
       if (!entry) return;
       try {
+        // Verify we got every chunk before writing — a missing chunk would
+        // silently produce a truncated file because Array#join skips holes.
+        // SCTP is ordered + reliable on a normal data channel, but we've
+        // seen `peer.send` return false mid-transfer (channel closing,
+        // bufferedAmount overflow handling) and that drops the chunk on
+        // the sender side without surfacing here.
+        const expected = entry.totalChunks;
+        if (expected === 0 || entry.received < expected) {
+          updateFileProgress(msg.fileId, 0, 'error');
+          showToast(
+            `File ${entry.name} thiếu dữ liệu (${entry.received}/${expected || '?'} chunks)`,
+            'error',
+          );
+          return;
+        }
+        for (let i = 0; i < expected; i++) {
+          if (typeof entry.chunks[i] !== 'string') {
+            updateFileProgress(msg.fileId, 0, 'error');
+            showToast(`File ${entry.name} thiếu chunk ${i}`, 'error');
+            return;
+          }
+        }
+
         // Concatenate base64 chunks then hand off to main for disk write.
         const fullBase64 = entry.chunks.join('');
         const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64, entry.targetHint);
@@ -949,7 +1006,7 @@ export class ConnectionManager {
         video: {
           width: { max: DEFAULT_MAX_WIDTH },
           height: { max: DEFAULT_MAX_HEIGHT },
-          frameRate: { max: DEFAULT_FPS },
+          frameRate: { max: 60 },
         },
       });
 

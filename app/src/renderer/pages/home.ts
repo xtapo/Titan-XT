@@ -138,7 +138,7 @@ export async function renderHomePage() {
         <div class="field-group">
           <label class="field-label">Password</label>
           <input type="text" id="partner-password" class="input-field input-password"
-                 placeholder="Mật khẩu" maxlength="4"
+                 placeholder="Mật khẩu" maxlength="64"
                  autocomplete="off" spellcheck="false" />
         </div>
 
