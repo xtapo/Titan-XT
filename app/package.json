@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-app",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Titan-XT Remote Desktop App",
   "author": "xtapo",
   "main": "dist/main/index.js",

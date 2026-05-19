@@ -49,17 +49,15 @@ const LONG_PRESS_MS = 420;
 // double tap doesn't accidentally fire a dblclick on the host.
 const DBL_TAP_GAP_MS = 280;
 // Pan ballistics — finger-px → screen-ratio.
-// Slow drags: ~1.6× so navigating across the host doesn't require a full
-// phone-width swipe; still precise enough to land on small UI targets
-// because each animation-frame delta is only a few px.
+// Slow drags: ~2.2× so a small finger movement covers a useful chunk of
+// the host screen without feeling like dragging a heavy object. Touch
+// users expect roughly phone-trackpad feel — Splashtop/Parsec sit around
+// 2.0–2.5 here for the same reason.
 // Fast flicks: extra gain proportional to *velocity* (px/ms), capped so a
-// hard flick can traverse the screen but doesn't shoot off uncontrollably.
-// PAN_QUADRATIC was multiplied by per-event delta in v1.3.0, which barely
-// ever exceeded 20 — so the curve was effectively flat. v1.3.1 uses real
-// velocity so the acceleration actually kicks in.
-const PAN_LINEAR = 1.6;
-const PAN_VELOCITY_GAIN = 3.0;   // multiplied by px/ms
-const PAN_VELOCITY_CAP = 2.5;    // max extra gain on top of linear
+// hard flick can traverse the screen without teleporting unpredictably.
+const PAN_LINEAR = 2.2;
+const PAN_VELOCITY_GAIN = 5.0;   // multiplied by px/ms
+const PAN_VELOCITY_CAP = 3.5;    // max extra gain on top of linear
 // Inertia scroll — exponential decay coefficient per frame at 60 Hz.
 // 0.92 = ~50% velocity remains after 8 frames (~133 ms); feels snappy without
 // floating forever.
@@ -116,8 +114,9 @@ export class TouchInput {
   private lastTapX = 0;
   private lastTapY = 0;
 
-  // Move batching — every frame we send the latest position and reset.
-  private moveDirty = false;
+  // Cursor-overlay repaint coalescing — moves go out immediately for low
+  // input latency, but the rotation-aware overlay paint is throttled to
+  // once per frame so we don't thrash layout.
   private moveRafScheduled = false;
 
   // Scroll velocity tracking for inertia.
@@ -277,33 +276,42 @@ export class TouchInput {
 
   // === Send helpers ===
 
+  /**
+   * Send a mouse-move to the host *immediately* and schedule a cursor-overlay
+   * repaint on the next frame. v1.3.x batched both into one rAF tick, which
+   * added ~16 ms of input latency on top of the network RTT — perceptible
+   * sluggishness even on a LAN. The host's input executor is happy to receive
+   * 240 Hz of move packets; the data channel is unreliable+unordered with
+   * priority='high' so flooding it just lets the latest position win.
+   *
+   * Cursor render still goes through rAF because reading offsetWidth /
+   * getBoundingClientRect for the rotation-aware coord math triggers layout
+   * on every call; coalescing to once per frame avoids jank.
+   */
   private scheduleMove() {
-    this.moveDirty = true;
+    const msg: MouseMessage = {
+      type: 'mouse',
+      action: 'move',
+      x: this.cursorX,
+      y: this.cursorY,
+    };
+    this.conn.sendInput(msg);
+
     if (this.moveRafScheduled) return;
     this.moveRafScheduled = true;
     requestAnimationFrame(() => {
       this.moveRafScheduled = false;
-      if (!this.moveDirty) return;
-      this.moveDirty = false;
-      const msg: MouseMessage = {
-        type: 'mouse',
-        action: 'move',
-        x: this.cursorX,
-        y: this.cursorY,
-      };
-      this.conn.sendInput(msg);
       this.renderCursor();
     });
   }
 
   /**
    * Drain any pending move synchronously so a tap-then-click sequence can't
-   * race past the host with `down` arriving before the latest `move`. One
-   * extra packet per click is a fine trade for input correctness.
+   * race past the host with `down` arriving before the latest `move`. Also
+   * forces an immediate cursor-overlay repaint so the user sees where the
+   * click landed without waiting for the next frame.
    */
   private flushMoveSync() {
-    if (!this.moveDirty) return;
-    this.moveDirty = false;
     const msg: MouseMessage = {
       type: 'mouse',
       action: 'move',
