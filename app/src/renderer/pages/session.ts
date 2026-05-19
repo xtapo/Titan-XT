@@ -40,6 +40,17 @@ export function renderSessionPage() {
     <div class="session-container">
       <div class="video-wrapper" id="video-wrapper">
         <video id="remote-video" autoplay playsinline muted disablepictureinpicture disableremoteplayback></video>
+        <!-- Synthetic cursor — drawn at the viewer's local mouse position with
+             zero latency so the user feels native cursor responsiveness even
+             when the video frame carrying the host's real cursor hasn't
+             arrived yet. Hidden by default; InputHandler shows it during
+             control sessions and positions it via transform on every move. -->
+        <div class="synthetic-cursor hidden" id="synthetic-cursor">
+          <svg width="20" height="22" viewBox="0 0 20 22" xmlns="http://www.w3.org/2000/svg">
+            <path d="M2 1.5 L2 17 L6 13 L9 19 L11.5 18 L8.5 12 L14 12 Z"
+                  fill="white" stroke="black" stroke-width="1.2" stroke-linejoin="round"/>
+          </svg>
+        </div>
         <div class="video-overlay" id="video-overlay">
           <div class="connecting-spinner">
             <div class="spinner"></div>

@@ -37,6 +37,12 @@ export class InputHandler {
   // becomes Ctrl-click and the session feels frozen.
   private heldKeys: Set<string> = new Set();
   private heldButtons: Set<'left' | 'right' | 'middle'> = new Set();
+  // Synthetic cursor — drawn at the viewer's local mouse position with
+  // zero latency. Same trick Parsec/Moonlight use: the user perceives
+  // native cursor responsiveness because their input drives the visible
+  // cursor directly, instead of waiting for the host's real cursor to
+  // come back through the capture+encode+network+decode pipeline (~80ms+).
+  private cursorEl: HTMLElement | null = null;
 
   constructor(videoEl: HTMLVideoElement, peer: PeerConnection) {
     this.videoEl = videoEl;
@@ -59,6 +65,12 @@ export class InputHandler {
     this.videoEl.tabIndex = 0;
     this.videoEl.focus();
 
+    // Synthetic cursor element — sibling of the video. Hidden until the
+    // pointer enters the video area so we don't show a stray cursor while
+    // the viewer is interacting with the toolbar.
+    this.cursorEl = document.getElementById('synthetic-cursor');
+    if (this.cursorEl) this.cursorEl.classList.add('hidden');
+
     // Mouse events
     this.videoEl.addEventListener('mousemove', this.onMouseMove);
     this.videoEl.addEventListener('mousedown', this.onMouseDown);
@@ -66,6 +78,8 @@ export class InputHandler {
     this.videoEl.addEventListener('dblclick', this.onDblClick);
     this.videoEl.addEventListener('contextmenu', this.onContextMenu);
     this.videoEl.addEventListener('wheel', this.onWheel, { passive: false });
+    this.videoEl.addEventListener('mouseenter', this.onMouseEnter);
+    this.videoEl.addEventListener('mouseleave', this.onMouseLeave);
 
     // Keyboard events
     this.videoEl.addEventListener('keydown', this.onKeyDown);
@@ -90,6 +104,10 @@ export class InputHandler {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
 
+    // Hide the synthetic cursor on disconnect / lock so it doesn't linger
+    // over a frozen video frame.
+    if (this.cursorEl) this.cursorEl.classList.add('hidden');
+
     // Clean release any keys/buttons still tracked as held so the host
     // doesn't end up with stuck modifiers after the viewer disconnects.
     this.onWindowBlur();
@@ -100,6 +118,8 @@ export class InputHandler {
     this.videoEl.removeEventListener('dblclick', this.onDblClick);
     this.videoEl.removeEventListener('contextmenu', this.onContextMenu);
     this.videoEl.removeEventListener('wheel', this.onWheel);
+    this.videoEl.removeEventListener('mouseenter', this.onMouseEnter);
+    this.videoEl.removeEventListener('mouseleave', this.onMouseLeave);
     this.videoEl.removeEventListener('keydown', this.onKeyDown);
     this.videoEl.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onWindowBlur);
@@ -173,9 +193,40 @@ export class InputHandler {
     const { x, y } = this.getRelativeCoords(e);
     this.lastX = x;
     this.lastY = y;
+    this.updateSyntheticCursor(e);
     const msg: MouseMessage = { type: 'mouse', action: 'move', x, y };
     this.peer.send(CHANNEL_INPUT, msg);
   };
+
+  private onMouseEnter = (e: MouseEvent) => {
+    if (!this.cursorEl) return;
+    this.cursorEl.classList.remove('hidden');
+    this.updateSyntheticCursor(e);
+  };
+
+  private onMouseLeave = () => {
+    if (!this.cursorEl) return;
+    this.cursorEl.classList.add('hidden');
+  };
+
+  /**
+   * Position the synthetic cursor at the viewer's local mouse coords.
+   * Uses transform (compositor-only update, no layout/paint of the video
+   * underneath) so it stays smooth even at 240Hz mouse polling.
+   *
+   * Coords are relative to the cursor's offsetParent (the video-wrapper);
+   * we read the wrapper's bounding rect to translate clientX/Y into the
+   * wrapper's local coordinate space.
+   */
+  private updateSyntheticCursor(e: MouseEvent): void {
+    if (!this.cursorEl) return;
+    const parent = this.cursorEl.offsetParent as HTMLElement | null;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    this.cursorEl.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  }
 
   private onMouseDown = (e: MouseEvent) => {
     const { x, y } = this.getRelativeCoords(e);
