@@ -378,6 +378,7 @@ async function renderIdDropdown(filter: string) {
       source: 'history',
       machineId: h.machineId,
       machineName: h.machineName,
+      password: h.lastPassword,
       lastConnectedAt: h.lastConnected,
     }));
 
@@ -413,10 +414,12 @@ async function renderIdDropdown(filter: string) {
     const star = it.source === 'pinned' && it.favorite ? '<span class="id-dd-star" title="Yêu thích">★</span>' : '';
     const lock = it.source === 'pinned'
       ? (it.password ? '<span class="id-dd-lock" title="Đã lưu mật khẩu">🔒</span>' : '<span class="id-dd-lock dim" title="Chưa lưu mật khẩu">🔓</span>')
-      : '';
+      : (it.password ? '<span class="id-dd-lock dim" title="Mật khẩu gần nhất sẽ tự điền">🔑</span>' : '');
     const connectAttr = it.source === 'pinned' && it.password
       ? `data-action="quick-connect" data-id="${escapeHtml(it.machineId)}" data-pw="${escapeHtml(it.password)}" data-mode="${it.defaultMode || 'control'}" data-ab="${escapeHtml(it.abId || '')}"`
-      : `data-action="fill-id" data-id="${escapeHtml(it.machineId)}"`;
+      : it.source === 'history' && it.password
+        ? `data-action="fill-id" data-id="${escapeHtml(it.machineId)}" data-pw="${escapeHtml(it.password)}"`
+        : `data-action="fill-id" data-id="${escapeHtml(it.machineId)}"`;
 
     return `
       <button type="button" class="id-dd-item" ${connectAttr}>
@@ -454,12 +457,21 @@ async function renderIdDropdown(filter: string) {
         const input = document.getElementById('partner-id') as HTMLInputElement;
         if (input) {
           input.value = formatIdInput(id);
-          validateConnectForm();
           input.focus();
         }
         document.querySelector('.partner-id-wrap')?.classList.remove('open');
         const passInput = document.getElementById('partner-password') as HTMLInputElement | null;
-        passInput?.focus();
+        const savedPw = el.dataset.pw || '';
+        if (passInput && savedPw) {
+          passInput.value = savedPw;
+        }
+        validateConnectForm();
+        // Nếu có sẵn mật khẩu gần nhất → đẩy focus xuống nút Connect để Enter là đi luôn.
+        if (savedPw) {
+          (document.getElementById('btn-connect') as HTMLButtonElement | null)?.focus();
+        } else {
+          passInput?.focus();
+        }
       } else if (action === 'quick-connect') {
         const password = el.dataset.pw || '';
         const mode = (el.dataset.mode || 'control') as 'control' | 'view';

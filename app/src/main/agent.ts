@@ -13,6 +13,23 @@ import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper'
 import { setupUpdater, checkForUpdatesWithDialog } from './updater';
 import { setupAnnotation, closeAnnotationOverlay } from './annotation';
 
+// Chromium ships with H.265 / HEVC over WebRTC gated behind feature flags.
+// Without these, RTCRtpSender.getCapabilities('video') doesn't list HEVC and
+// our codec-preference toggle silently falls back to H.264. Must run before
+// app.whenReady() — Chromium command-line flags are read at process startup.
+//
+// PlatformHEVCEncoderSupport / PlatformHEVCDecoderSupport route encode/decode
+// through the OS-level hardware codec (Media Foundation on Windows, AVFoundation
+// on macOS). Without these, Chromium ignores the GPU's HEVC encoder and either
+// refuses HEVC entirely or falls back to a software encoder that can't keep up
+// with 1080p screen share — defeating the bandwidth win.
+app.commandLine.appendSwitch('enable-features', [
+  'WebRtcAllowH265Send',
+  'WebRtcAllowH265Receive',
+  'PlatformHEVCEncoderSupport',
+  'PlatformHEVCDecoderSupport',
+].join(','));
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let originalBounds: Electron.Rectangle | null = null;

@@ -24,6 +24,12 @@ export interface ConnectionHistory {
   machineName: string;
   lastConnected: number;
   totalSessions: number;
+  /**
+   * Mật khẩu dùng cho lần kết nối thành công gần nhất. Lưu cục bộ để
+   * auto-fill khi chọn lại từ dropdown "Kết nối gần đây". Không bao giờ
+   * gửi lên signal server.
+   */
+  lastPassword?: string;
 }
 
 /**

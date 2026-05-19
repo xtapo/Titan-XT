@@ -1447,6 +1447,7 @@ export class ConnectionManager {
         machineName: '',
         lastConnected: Date.now(),
         totalSessions: 1,
+        lastPassword: this.viewerCredentials?.password || '',
       });
     } catch {
       // best-effort
