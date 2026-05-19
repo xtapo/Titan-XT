@@ -1394,9 +1394,22 @@ export class ConnectionManager {
     }
     this.viewerCredentials = null;
     this.inputHandler?.disable();
-    this.peer?.close();
+    // Hold the peer reference and close it on a short delay so the SCTP
+    // data channel has time to flush peer-bye. Calling pc.close()
+    // synchronously here drops queued messages, leaving the partner to
+    // wait out a 10–30 s ICE timeout before its UI tears down.
+    const peerToClose = this.peer;
     this.peer = null;
     this.inputHandler = null;
+    if (peerToClose) {
+      setTimeout(() => {
+        try {
+          peerToClose.close();
+        } catch {
+          // best-effort
+        }
+      }, 250);
+    }
     if (this.role === 'host') {
       exitHostMode();
       // Tear down the host-side annotation overlay so it doesn't dangle as
