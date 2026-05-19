@@ -498,11 +498,69 @@
 
 .toolbar-stats {
   display: flex;
+  align-items: center;
   gap: 10px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: #6b7686;
   padding: 0 6px;
+}
+
+/* Network condition badge — colored dot + short label.
+   Color is set per state class below; default state is "unknown" (grey). */
+.stat-network-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  cursor: help;
+}
+.stat-network-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.stat-network-good {
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.32);
+  color: #6ee7b7;
+}
+.stat-network-good .stat-network-dot {
+  background: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+}
+.stat-network-warn {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.32);
+  color: #fcd34d;
+}
+.stat-network-warn .stat-network-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.7);
+}
+.stat-network-bad {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+  animation: stat-network-pulse 1.6s ease-in-out infinite;
+}
+.stat-network-bad .stat-network-dot {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.7);
+}
+.stat-network-unknown { color: #9aa5b1; }
+@keyframes stat-network-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); border-color: rgba(248, 113, 113, 0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.7); }
 }
 
 /* Dropdown menus inside the new toolbar (light-themed to match) */

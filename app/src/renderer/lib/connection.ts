@@ -44,6 +44,35 @@ import {
 import { auditLog, setActiveAuditSession } from './audit-logger';
 import { pushMetricsSample, resetMetricsHistory } from './metrics';
 
+/**
+ * Recolor the toolbar's network-condition badge based on the latest sample.
+ * Tiers mirror the metrics-panel status semantics so both indicators agree.
+ *   <120 ms RTT and <1% loss  → "Tốt" (green)
+ *   <250 ms RTT and <4% loss  → "Trung bình" (amber)
+ *   ≥250 ms RTT or ≥4% loss   → "Kém" (red)
+ */
+function updateNetworkBadge(rttMs: number, lossFrac: number): void {
+  const badge = document.getElementById('stat-network-badge');
+  if (!badge) return;
+  const label = badge.querySelector('.stat-network-label');
+  let cls = 'stat-network-badge';
+  let text = 'Tốt';
+  if (rttMs <= 0) {
+    cls += ' stat-network-unknown';
+    text = '...';
+  } else if (rttMs >= 250 || lossFrac >= 0.04) {
+    cls += ' stat-network-bad';
+    text = 'Kém';
+  } else if (rttMs >= 120 || lossFrac >= 0.01) {
+    cls += ' stat-network-warn';
+    text = 'Trung bình';
+  } else {
+    cls += ' stat-network-good';
+  }
+  badge.className = cls;
+  if (label) label.textContent = text;
+}
+
 export class ConnectionManager {
   private socket: Socket | null = null;
   private peer: PeerConnection | null = null;
@@ -112,6 +141,17 @@ export class ConnectionManager {
   // can render the picker without round-tripping every time it opens.
   private remoteMonitors: Array<{ id: string; name: string; isPrimary: boolean }> = [];
   private activeRemoteSourceId: string | null = null;
+
+  // === Idle FPS optimization (viewer-side) ===
+  // When the viewer window is hidden / minimized for a sustained period,
+  // step down the quality preset so the host stops paying for encode +
+  // bandwidth on frames nobody is watching. Snap back to the previous
+  // preset the moment the window comes forward. Inspired by AnyDesk's
+  // "save bandwidth when minimized" behavior.
+  private idleFpsActive: boolean = false;
+  private idleFpsPreviousPreset: QualityPreset | null = null;
+  private idleFpsTimer: number | null = null;
+  private boundVisibilityHandler = () => this.onVisibilityChange();
 
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
@@ -418,6 +458,9 @@ export class ConnectionManager {
     // history doesn't bleed into the panel.
     resetMetricsHistory();
 
+    // Wire idle-FPS reduction. Removed in disconnect().
+    document.addEventListener('visibilitychange', this.boundVisibilityHandler);
+
     // Mark the audit session for the viewer side so log entries on this
     // machine record what the technician did rather than what was done to
     // the host.
@@ -511,6 +554,7 @@ export class ConnectionManager {
             ? `${mbps.toFixed(1)}Mbps`
             : `${Math.round(stats.bitrate / 1000)}kbps`;
         }
+        updateNetworkBadge(stats.latency, stats.packetLoss);
         pushMetricsSample(stats, this.currentQuality);
         this.evaluateAdaptiveQuality(stats.latency, stats.packetLoss);
       },
@@ -970,20 +1014,74 @@ export class ConnectionManager {
 
   /**
    * Probe whether the local Chromium build can *decode* a codec. Used to
-   * gray out the H.265 toggle on builds that don't expose HEVC over WebRTC.
-   * The check looks at RTCRtpReceiver capabilities — sender capabilities
-   * are irrelevant on the viewer (it doesn't encode video).
+   * gray out advanced toggles on builds that don't expose the codec over
+   * WebRTC (HEVC/AV1 ship behind feature flags on some channels). The check
+   * looks at RTCRtpReceiver capabilities — sender capabilities are
+   * irrelevant on the viewer (it doesn't encode video).
    */
   static codecSupported(codec: VideoCodec): boolean {
     try {
       const caps = (RTCRtpReceiver as any).getCapabilities?.('video');
       if (!caps?.codecs) return codec === 'h264'; // assume H.264 always works
-      const target = codec === 'h265' ? 'video/h265' : 'video/h264';
+      const target =
+        codec === 'h265' ? 'video/h265'
+        : codec === 'av1' ? 'video/av1'
+        : codec === 'vp9' ? 'video/vp9'
+        : 'video/h264';
       return (caps.codecs as Array<{ mimeType: string }>).some(
         (c) => c.mimeType.toLowerCase() === target,
       );
     } catch {
       return codec === 'h264';
+    }
+  }
+
+  /**
+   * Idle FPS reduction — when the viewer window stays hidden for ~3 s, step
+   * down to the cheapest preset so the host stops burning bandwidth on
+   * frames nobody is looking at. Restored the moment the window returns.
+   *
+   * Uses Page Visibility instead of focus because focus stays on the OS
+   * "active app" even when our window is fully covered — visibilitychange
+   * fires on minimize, alt-tab, and workspace switch.
+   */
+  private onVisibilityChange(): void {
+    if (this.role !== 'viewer') return;
+    if (document.visibilityState === 'hidden') {
+      // Wait a few seconds before downgrading. Brief alt-tabs (looking up
+      // a value, switching to a comm app) shouldn't trigger a costly
+      // renegotiation cycle.
+      if (this.idleFpsTimer) clearTimeout(this.idleFpsTimer);
+      this.idleFpsTimer = window.setTimeout(() => {
+        if (document.visibilityState !== 'hidden') return;
+        if (this.idleFpsActive) return;
+        if (!this.peer || !this.adaptiveEnabled) return;
+        this.idleFpsActive = true;
+        this.idleFpsPreviousPreset = this.currentQuality;
+        this.currentQuality = 'tiny';
+        this.peer.send(CHANNEL_SYSTEM, {
+          type: 'system',
+          action: 'quality',
+          data: { preset: 'tiny', source: 'idle' },
+        });
+        console.log('[Conn] Window hidden — dropped to "tiny" to save bandwidth');
+      }, 3_000);
+    } else {
+      if (this.idleFpsTimer) {
+        clearTimeout(this.idleFpsTimer);
+        this.idleFpsTimer = null;
+      }
+      if (!this.idleFpsActive || !this.peer) return;
+      const restore = this.idleFpsPreviousPreset || DEFAULT_QUALITY;
+      this.idleFpsActive = false;
+      this.idleFpsPreviousPreset = null;
+      this.currentQuality = restore;
+      this.peer.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'quality',
+        data: { preset: restore, source: 'idle-restore' },
+      });
+      console.log('[Conn] Window visible — restored to', restore);
     }
   }
 
@@ -1591,6 +1689,13 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
+    if (this.idleFpsTimer) {
+      clearTimeout(this.idleFpsTimer);
+      this.idleFpsTimer = null;
+    }
+    this.idleFpsActive = false;
+    this.idleFpsPreviousPreset = null;
+    document.removeEventListener('visibilitychange', this.boundVisibilityHandler);
     if (this.role) {
       auditLog('session-end', 'Phiên kết thúc', {
         role: this.role,
@@ -1649,6 +1754,14 @@ export class ConnectionManager {
     this.role = null;
     this.partnerId = '';
     this.historyRecordedFor = null;
+    // Reset the network badge so the next session doesn't inherit the prior
+    // one's color before the first stats sample lands.
+    const badge = document.getElementById('stat-network-badge');
+    if (badge) {
+      badge.className = 'stat-network-badge stat-network-unknown';
+      const label = badge.querySelector('.stat-network-label');
+      if (label) label.textContent = '--';
+    }
   }
 
   disconnectAll(): void {

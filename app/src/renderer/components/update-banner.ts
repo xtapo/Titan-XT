@@ -57,11 +57,21 @@ function handleUpdateStatus(status: any): void {
     manualCheckPending = false;
     availableVersion = status.version;
     currentState = 'available';
-    showBanner(
-      `Phiên bản mới ${status.version} đã sẵn sàng`,
-      'Tải về',
-      () => downloadUpdate()
-    );
+    // macOS unsigned builds can't auto-install — main process flags this
+    // with manualInstall=true. Route the action straight to the browser.
+    if (status.manualInstall) {
+      showBanner(
+        `Phiên bản mới ${status.version} — tải về thủ công`,
+        'Mở trang tải',
+        () => openDownloadPage(status.downloadUrl)
+      );
+    } else {
+      showBanner(
+        `Phiên bản mới ${status.version} đã sẵn sàng`,
+        'Tải về',
+        () => downloadUpdate()
+      );
+    }
   } else if (state === 'downloading') {
     currentState = 'downloading';
     const percent = status.percent || 0;
@@ -147,4 +157,16 @@ async function downloadUpdate(): Promise<void> {
 
 async function installUpdate(): Promise<void> {
   await window.titanAPI?.updater?.install?.();
+}
+
+function openDownloadPage(url: string | undefined): void {
+  const target = url || 'https://github.com/xtapo/Titan-XT/releases/latest';
+  // Prefer the main-process opener (registered IPC) so the URL goes through
+  // shell.openExternal. Fall back to window.open for safety.
+  const opener = (window.titanAPI as any)?.openExternal;
+  if (typeof opener === 'function') {
+    opener(target);
+  } else {
+    window.open(target, '_blank', 'noopener,noreferrer');
+  }
 }

@@ -1,18 +1,33 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater';
 
 // electron-updater talks to GitHub Releases via the `publish` block in
 // package.json (provider: github, owner: xtapo, repo: Titan-XT). It looks
 // up `latest.yml` (auto-emitted by electron-builder when targeting nsis)
 // against the running app version and downloads the matching installer.
+//
+// macOS caveat: Squirrel.Mac (the engine electron-updater drives on darwin)
+// refuses to swap an unsigned bundle. Our CI builds are unsigned today, so
+// `quitAndInstall()` would fail silently. Until a Developer ID cert is wired
+// up via CSC_LINK in .github/workflows/release.yml, the macOS path is rerouted
+// to "open the GitHub release page in the browser" so the user can grab the
+// DMG and install by hand.
+
+const RELEASES_URL_BASE = 'https://github.com/xtapo/Titan-XT/releases';
+const IS_MAC = process.platform === 'darwin';
 
 let mainWindowGetter: (() => BrowserWindow | null) | null = null;
 let downloadingUpdate = false;
 let updateDownloaded = false;
+let availableVersion: string | null = null;
 // Tracks whether the in-flight check was triggered by the user via the tray
 // menu / IPC (vs the silent post-launch check). Manual checks need explicit
 // feedback when the result is "up-to-date" — otherwise the user sees nothing.
 let manualCheckPending = false;
+
+function releaseUrlForVersion(version: string | null): string {
+  return version ? `${RELEASES_URL_BASE}/tag/v${version}` : `${RELEASES_URL_BASE}/latest`;
+}
 
 function send(channel: string, payload?: unknown): void {
   const win = mainWindowGetter?.();
@@ -46,12 +61,18 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
     // Available result handles itself via the banner — clear the manual flag
     // so we don't also pop a redundant dialog.
     manualCheckPending = false;
+    availableVersion = info.version;
     showAndFocusWindow();
     send('updater:status', {
       state: 'available',
       version: info.version,
       releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : undefined,
       releaseDate: info.releaseDate,
+      // macOS builds are unsigned — Squirrel.Mac refuses to swap an unsigned
+      // bundle, so the renderer routes the action button to the browser
+      // instead of attempting an in-app download/install.
+      manualInstall: IS_MAC,
+      downloadUrl: IS_MAC ? releaseUrlForVersion(info.version) : undefined,
     });
   });
 
@@ -107,6 +128,14 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
   });
 
   ipcMain.handle('updater:download', async () => {
+    // macOS unsigned: skip electron-updater's download path entirely. The
+    // renderer should have already shown the "open browser" CTA via the
+    // manualInstall flag on the available event, so this branch is just a
+    // safety net.
+    if (IS_MAC) {
+      shell.openExternal(releaseUrlForVersion(availableVersion));
+      return { ok: true, openedBrowser: true };
+    }
     if (downloadingUpdate || updateDownloaded) {
       return { ok: true, alreadyHandled: true };
     }
@@ -121,6 +150,10 @@ export function setupUpdater(getMainWindow: () => BrowserWindow | null): void {
   });
 
   ipcMain.handle('updater:install', () => {
+    if (IS_MAC) {
+      shell.openExternal(releaseUrlForVersion(availableVersion));
+      return { ok: true, openedBrowser: true };
+    }
     if (!updateDownloaded) {
       return { ok: false, reason: 'not-downloaded' };
     }

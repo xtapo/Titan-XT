@@ -156,6 +156,9 @@ contextBridge.exposeInMainWorld('titanAPI', {
     },
   },
 
+  // === Open external URL via main (shell.openExternal) ===
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+
   // === Connection Events (Main → Renderer) ===
   on: (channel: string, callback: (...args: any[]) => void) => {
     const validChannels = [

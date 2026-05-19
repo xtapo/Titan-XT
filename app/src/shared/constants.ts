@@ -42,13 +42,23 @@ export const VIDEO_START_BITRATE = 6_000_000;
 // with Chromium 130 is fine); Safari 13.1+ and iOS 14+ work; older Android
 // Chrome may not. We probe support via RTCRtpReceiver.getCapabilities at
 // runtime and disable the toggle when unavailable.
-export type VideoCodec = 'h264' | 'h265';
+//
+// AV1 (royalty-free, ~50% better than H.264 / ~20% better than HEVC at the
+// same quality) is excellent for screen share text. Software encode is too
+// slow for 1080p60 unless the host has hardware AV1 (Intel Arc, NVIDIA 40-series,
+// AMD 7000-series); we still expose the toggle and let the codec probe gate it.
+// VP9 is the older royalty-free fallback — universally available in Chromium
+// and a sensible middle-ground when H.265 isn't available but the link wants
+// better-than-H.264 efficiency.
+export type VideoCodec = 'h264' | 'h265' | 'av1' | 'vp9';
 
 export const DEFAULT_CODEC: VideoCodec = 'h264';
 
 export const CODEC_LABELS: Record<VideoCodec, string> = {
   h264: 'H.264 (tương thích cao)',
   h265: 'H.265 / HEVC (giảm ~40% bitrate)',
+  av1: 'AV1 (chất lượng cao nhất, cần GPU mới)',
+  vp9: 'VP9 (cân bằng, tương thích rộng)',
 };
 
 // Codec ordering passed to setCodecPreferences. Order matters — the first
@@ -56,8 +66,10 @@ export const CODEC_LABELS: Record<VideoCodec, string> = {
 // first; the others stay as fallbacks so the negotiation still succeeds
 // when the peer can't decode the preferred one.
 export const PREFERRED_VIDEO_CODECS_BY_PREF: Record<VideoCodec, string[]> = {
-  h264: ['video/H264', 'video/VP9', 'video/VP8', 'video/H265'],
-  h265: ['video/H265', 'video/H264', 'video/VP9', 'video/VP8'],
+  h264: ['video/H264', 'video/VP9', 'video/VP8', 'video/H265', 'video/AV1'],
+  h265: ['video/H265', 'video/H264', 'video/VP9', 'video/VP8', 'video/AV1'],
+  av1: ['video/AV1', 'video/VP9', 'video/H265', 'video/H264', 'video/VP8'],
+  vp9: ['video/VP9', 'video/H264', 'video/H265', 'video/AV1', 'video/VP8'],
 };
 
 // Legacy export — keeps existing call-sites working until they thread the

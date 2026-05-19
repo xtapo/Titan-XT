@@ -167,7 +167,7 @@ export function renderSessionPage() {
                 .join('')}
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Codec video</div>
-              ${(['h264', 'h265'] as VideoCodec[])
+              ${(['h264', 'h265', 'av1', 'vp9'] as VideoCodec[])
                 .map((c) => {
                   const supported = ConnectionManager.codecSupported(c);
                   const cls = supported
@@ -260,6 +260,10 @@ export function renderSessionPage() {
 
         <div class="toolbar-right">
           <span class="toolbar-stats" id="toolbar-stats">
+            <span class="stat-network-badge" id="stat-network-badge" title="Tình trạng mạng">
+              <span class="stat-network-dot"></span>
+              <span class="stat-network-label">--</span>
+            </span>
             <span class="stat-latency" id="stat-latency">--ms</span>
             <span class="stat-fps" id="stat-fps">--fps</span>
             <span class="stat-bitrate" id="stat-bitrate">--</span>
