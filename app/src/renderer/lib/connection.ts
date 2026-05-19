@@ -27,7 +27,9 @@ import {
   DEFAULT_MAX_WIDTH,
   DEFAULT_MAX_HEIGHT,
   DEFAULT_FPS,
+  DEFAULT_CODEC,
   QualityPreset,
+  VideoCodec,
   ADAPTIVE_RTT_DOWNGRADE_MS,
   ADAPTIVE_RTT_UPGRADE_MS,
   ADAPTIVE_LOSS_DOWNGRADE,
@@ -49,6 +51,7 @@ export class ConnectionManager {
   private machineId: string = '';
   private machineName: string = '';
   private currentQuality: QualityPreset = DEFAULT_QUALITY;
+  private currentCodec: VideoCodec = DEFAULT_CODEC;
   private role: 'host' | 'viewer' | null = null;
   private partnerId: string = '';
   // Host-side: viewer's machine name captured from the incoming connect-request,
@@ -802,6 +805,49 @@ export class ConnectionManager {
     this.adaptiveCooldown = 0;
   }
 
+  // === Codec preference ===
+
+  /**
+   * Viewer-side: tell the host to switch encoder codec (h264 ↔ h265).
+   * The host will reorder its setCodecPreferences and renegotiate (createOffer
+   * → answer round-trip) so the next encoded frames use the new codec.
+   *
+   * No-op when WebRTC capability probing says the local browser can't decode
+   * the requested codec — caller should pre-check via codecSupported().
+   */
+  requestCodec(codec: VideoCodec): boolean {
+    if (this.role !== 'viewer') return false;
+    this.currentCodec = codec;
+    return this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'codec',
+      data: { preferred: codec },
+    }) ?? false;
+  }
+
+  get codec(): VideoCodec {
+    return this.currentCodec;
+  }
+
+  /**
+   * Probe whether the local Chromium build can *decode* a codec. Used to
+   * gray out the H.265 toggle on builds that don't expose HEVC over WebRTC.
+   * The check looks at RTCRtpReceiver capabilities — sender capabilities
+   * are irrelevant on the viewer (it doesn't encode video).
+   */
+  static codecSupported(codec: VideoCodec): boolean {
+    try {
+      const caps = (RTCRtpReceiver as any).getCapabilities?.('video');
+      if (!caps?.codecs) return codec === 'h264'; // assume H.264 always works
+      const target = codec === 'h265' ? 'video/h265' : 'video/h264';
+      return (caps.codecs as Array<{ mimeType: string }>).some(
+        (c) => c.mimeType.toLowerCase() === target,
+      );
+    } catch {
+      return codec === 'h264';
+    }
+  }
+
   // === Multi-monitor ===
 
   /**
@@ -1030,6 +1076,30 @@ export class ConnectionManager {
           // default in that case.
           const degPref = msg.data?.degradationPreference as RTCDegradationPreference | undefined;
           this.peer?.applyQualityProfile(preset, degPref);
+        }
+        break;
+
+      case 'codec':
+        // Viewer asked the host to switch encoder codec (H.264 ↔ H.265).
+        // Reorder the codec preferences then create a fresh offer so the
+        // next encoded frames use the chosen codec. Renegotiation is cheap —
+        // the existing data channels and SSRC stay alive, only the SDP
+        // codec ordering and resulting payload type change.
+        if (this.role === 'host') {
+          const preferred = msg.data?.preferred as VideoCodec | undefined;
+          if (!preferred) return;
+          this.currentCodec = preferred;
+          this.peer?.setCodecPreference(preferred);
+          this.peer?.renegotiate().then((offer) => {
+            this.socket?.emit('signal', {
+              type: 'offer',
+              to: this.partnerId,
+              data: offer,
+            });
+            console.log(`[Conn] Codec switched to ${preferred} — renegotiating`);
+          }).catch((err) => {
+            console.warn('[Conn] Codec renegotiation failed:', err);
+          });
         }
         break;
 

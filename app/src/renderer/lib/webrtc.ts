@@ -11,7 +11,9 @@ import {
   CHANNEL_ANNOTATION,
   VIDEO_MAX_BITRATE,
   VIDEO_START_BITRATE,
-  PREFERRED_VIDEO_CODECS,
+  PREFERRED_VIDEO_CODECS_BY_PREF,
+  DEFAULT_CODEC,
+  VideoCodec,
   QUALITY_PROFILES,
   QualityPreset,
 } from '../../shared/constants';
@@ -44,6 +46,10 @@ export class PeerConnection {
   // InvalidStateError on Chromium, which silently kills the connection.
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
   private remoteDescriptionSet: boolean = false;
+  // Active codec preference — viewer can flip h264↔h265 mid-session and the
+  // host re-negotiates with the new ordering. Cached so a track replacement
+  // (monitor switch) re-applies the same preference without a round-trip.
+  private codecPreference: VideoCodec = DEFAULT_CODEC;
 
   constructor(callbacks: PeerCallbacks) {
     this.callbacks = callbacks;
@@ -305,7 +311,8 @@ export class PeerConnection {
   }
 
   /**
-   * Reorder codec preferences so H.264 (hardware-accelerated on most GPUs) is tried first.
+   * Reorder codec preferences so the active selection (h264 or h265) is
+   * tried first. The peer's answer picks the first codec both sides support.
    * Falls back gracefully on browsers without setCodecPreferences support.
    */
   private preferVideoCodec(): void {
@@ -319,9 +326,10 @@ export class PeerConnection {
       const caps = (RTCRtpSender as any).getCapabilities?.('video');
       if (!caps?.codecs) return;
 
+      const wanted = PREFERRED_VIDEO_CODECS_BY_PREF[this.codecPreference];
       const codecs = caps.codecs as Array<{ mimeType: string }>;
       const ordered: Array<{ mimeType: string }> = [];
-      for (const want of PREFERRED_VIDEO_CODECS) {
+      for (const want of wanted) {
         for (const c of codecs) {
           if (c.mimeType.toLowerCase() === want.toLowerCase() && !ordered.includes(c)) {
             ordered.push(c);
@@ -336,6 +344,32 @@ export class PeerConnection {
     } catch (err) {
       console.warn('[WebRTC] Could not set codec preferences:', err);
     }
+  }
+
+  /**
+   * Public hook for the connection manager — viewer flipped the codec
+   * toggle and the host needs to re-apply preferences + renegotiate.
+   * Returns true if a renegotiation was kicked off (caller emits the offer).
+   */
+  setCodecPreference(codec: VideoCodec): void {
+    this.codecPreference = codec;
+    this.preferVideoCodec();
+  }
+
+  getCodecPreference(): VideoCodec {
+    return this.codecPreference;
+  }
+
+  /**
+   * Force a fresh offer to apply new codec preferences. Returns the offer
+   * SDP so the connection manager can ship it over the signaling channel.
+   * Caller is responsible for routing the answer back via handleAnswer().
+   */
+  async renegotiate(): Promise<RTCSessionDescriptionInit> {
+    const offer = await this.pc.createOffer();
+    if (offer.sdp) offer.sdp = this.tuneSdp(offer.sdp);
+    await this.pc.setLocalDescription(offer);
+    return offer;
   }
 
   /**

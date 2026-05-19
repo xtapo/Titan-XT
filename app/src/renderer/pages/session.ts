@@ -4,7 +4,8 @@
 
 import { showToast } from '../components/toast';
 import { navigateTo } from '../main';
-import { QUALITY_PROFILES, QualityPreset } from '../../shared/constants';
+import { QUALITY_PROFILES, QualityPreset, CODEC_LABELS, VideoCodec } from '../../shared/constants';
+import { ConnectionManager } from '../lib/connection';
 import { SessionRecorder, formatElapsed, RecorderState } from '../lib/recorder';
 import { AnnotationController } from '../lib/annotation';
 
@@ -145,6 +146,16 @@ export function renderSessionPage() {
               <button class="dropdown-item" data-quality="auto">Tự động (theo mạng)</button>
               ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
                 .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
+                .join('')}
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Codec video</div>
+              ${(['h264', 'h265'] as VideoCodec[])
+                .map((c) => {
+                  const supported = ConnectionManager.codecSupported(c);
+                  const cls = supported ? 'dropdown-item' : 'dropdown-item dropdown-item-disabled';
+                  const note = supported ? '' : ' (không hỗ trợ)';
+                  return `<button class="${cls}" data-codec="${c}"${supported ? '' : ' disabled'}>${CODEC_LABELS[c]}${note}</button>`;
+                })
                 .join('')}
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Hiển thị</div>
@@ -325,6 +336,7 @@ function setupSessionEvents() {
     if (!item) return;
     const view = item.dataset.view;
     const quality = item.dataset.quality as QualityPreset | undefined;
+    const codec = item.dataset.codec as VideoCodec | undefined;
     const fit = item.dataset.fit as DisplayFit | undefined;
     const mode = item.dataset.mode as 'control' | 'view' | undefined;
     const monitorId = item.dataset.monitor;
@@ -368,6 +380,17 @@ function setupSessionEvents() {
         showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
       } else {
         showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
+      }
+    } else if (codec) {
+      if (!ConnectionManager.codecSupported(codec)) {
+        showToast(`Trình duyệt không hỗ trợ ${CODEC_LABELS[codec]}`, 'error');
+        return;
+      }
+      const ok = window.connectionManager?.requestCodec(codec);
+      if (ok === false) {
+        showToast('Chưa kết nối — chưa thể đổi codec', 'info');
+      } else {
+        showToast(`Đã yêu cầu chuyển sang ${CODEC_LABELS[codec]}`, 'success');
       }
     } else if (fit) {
       const video = document.getElementById('remote-video') as HTMLVideoElement | null;

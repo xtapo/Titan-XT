@@ -28,10 +28,41 @@ export const DEFAULT_MAX_HEIGHT = 2160;
 // Lower presets clamp themselves below this via QUALITY_PROFILES.maxBitrate.
 export const VIDEO_MAX_BITRATE = 30_000_000;
 export const VIDEO_START_BITRATE = 6_000_000;
-// Prefer H.264 first — hardware-accelerated on virtually every modern GPU
-// (NVENC / QuickSync / AMF) which keeps encode latency low and CPU free.
-// VP8/VP9 are software-only on most Windows builds of Chromium.
-export const PREFERRED_VIDEO_CODECS = ['video/H264', 'video/VP9', 'video/VP8'];
+// Video codec preference — viewer-selectable, applied on the host's sender.
+//
+// H.264 is the safe default: hardware-decoded on every WebRTC-capable
+// device made in the last decade and the encoder ships with every modern
+// GPU (NVENC / QuickSync / AMF / VideoToolbox).
+//
+// H.265 (HEVC) saves ~40% bitrate at the same visual quality — text stays
+// sharp on cellular and 4K screen share fits in ~12 Mbps instead of ~25.
+// Trade-off: encode is heavier (matters on hosts without a hardware HEVC
+// encoder, e.g. older laptops, GPU-less VMs) and not every browser
+// negotiates HEVC over WebRTC. Chromium added it in 107+ (so Electron 33
+// with Chromium 130 is fine); Safari 13.1+ and iOS 14+ work; older Android
+// Chrome may not. We probe support via RTCRtpReceiver.getCapabilities at
+// runtime and disable the toggle when unavailable.
+export type VideoCodec = 'h264' | 'h265';
+
+export const DEFAULT_CODEC: VideoCodec = 'h264';
+
+export const CODEC_LABELS: Record<VideoCodec, string> = {
+  h264: 'H.264 (tương thích cao)',
+  h265: 'H.265 / HEVC (giảm ~40% bitrate)',
+};
+
+// Codec ordering passed to setCodecPreferences. Order matters — the first
+// codec the *answerer* also supports wins. Whatever the user picks goes
+// first; the others stay as fallbacks so the negotiation still succeeds
+// when the peer can't decode the preferred one.
+export const PREFERRED_VIDEO_CODECS_BY_PREF: Record<VideoCodec, string[]> = {
+  h264: ['video/H264', 'video/VP9', 'video/VP8', 'video/H265'],
+  h265: ['video/H265', 'video/H264', 'video/VP9', 'video/VP8'],
+};
+
+// Legacy export — keeps existing call-sites working until they thread the
+// per-session preference through. Equivalent to PREFERRED_VIDEO_CODECS_BY_PREF.h264.
+export const PREFERRED_VIDEO_CODECS = PREFERRED_VIDEO_CODECS_BY_PREF[DEFAULT_CODEC];
 
 // Adaptive quality thresholds — viewer-side auto-downgrade when the network
 // degrades (high RTT or packet loss). Tuned for screen share, not video chat.
