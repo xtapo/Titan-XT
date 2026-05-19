@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, clipboard, shell } from 'electron';
 import path from 'path';
 import os from 'os';
-import { APP_NAME } from '../shared/constants';
+import { APP_NAME, DEFAULT_SIGNAL_SERVER } from '../shared/constants';
 import { setupIdentity } from './identity';
-import { setupStore } from './store';
+import { setupStore, getStore } from './store';
 import { setupInputSimulator } from './input-simulator';
 import { setupScreenCapture, getSelectedSourceId } from './screen-capture';
 import { setupFileTransfer } from './file-transfer';
@@ -13,6 +13,8 @@ import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper'
 import { setupUpdater, checkForUpdatesWithDialog } from './updater';
 import { setupAnnotation, closeAnnotationOverlay } from './annotation';
 import { setupAudit } from './audit';
+import { setupSignalClient, startSignalClient, stopSignalClient } from './signal-client';
+import type { AppSettings } from '../shared/types';
 
 // Chromium ships with H.265 / HEVC over WebRTC gated behind feature flags.
 // Without these, RTCRtpSender.getCapabilities('video') doesn't list HEVC and
@@ -108,7 +110,19 @@ function applyHostBounds(collapsed: boolean): void {
 }
 
 // === Window Creation ===
+//
+// The window is destroyed on close (not just hidden) so the renderer + GPU
+// processes are reclaimed while the app sits in tray. Anything that needs to
+// keep running unattended (signal-server connection, accepting incoming
+// connect-requests) lives in main and survives the window going away.
 function createMainWindow(startHidden: boolean = false): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (!startHidden) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    return;
+  }
   mainWindow = new BrowserWindow({
     width: 850,
     height: 650,
@@ -167,15 +181,33 @@ function createMainWindow(startHidden: boolean = false): void {
     console.error('[Main] render-process-gone:', details);
   });
 
-  // Minimize to tray instead of close — but tear down any active remote
-  // session first so the partner doesn't keep "Đang điều khiển" / chat panel
-  // up against a window the user thinks they closed.
+  // Close → fully destroy the window so the renderer + GPU processes are
+  // reclaimed while we sit in tray. The signal-server connection and incoming
+  // request handler live in main, so unattended access still works without
+  // keeping the renderer alive. Re-creating the window when the user clicks
+  // the tray (or on incoming session) takes ~500ms — a worthwhile trade for
+  // ~150–200 MB of resident memory.
   mainWindow.on('close', (event) => {
-    if (tray) {
-      event.preventDefault();
-      mainWindow?.webContents.send('app:before-hide');
-      mainWindow?.hide();
-    }
+    if (!tray) return;
+    event.preventDefault();
+    try { mainWindow?.webContents.send('app:before-hide'); } catch { /* ignore */ }
+    // Tear down the renderer's signal subscription so events buffer in main
+    // until the next window is up and ready.
+    try { mainWindow?.webContents.send('signal:detach-now'); } catch { /* ignore */ }
+    // Give the renderer a tick to flush before we destroy.
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.destroy();
+      }
+    }, 80);
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    originalBounds = null;
+    originalMinSize = null;
+    hostModeActive = false;
+    hostCollapsed = false;
   });
 
   mainWindow.on('maximize', () => {
@@ -204,7 +236,7 @@ function createTray(): void {
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Mở Titan-XT',
-      click: () => mainWindow?.show(),
+      click: () => ensureMainWindow(),
     },
     {
       label: 'Kiểm tra cập nhật...',
@@ -229,8 +261,23 @@ function createTray(): void {
   tray.setContextMenu(contextMenu);
 
   tray.on('double-click', () => {
-    mainWindow?.show();
+    ensureMainWindow();
   });
+}
+
+/**
+ * Re-create or surface the main window. Used by tray click and by
+ * incoming connect-request when the renderer was destroyed. Idempotent —
+ * a no-op when the window is already visible.
+ */
+function ensureMainWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  createMainWindow(false);
 }
 
 // === IPC Handlers ===
@@ -367,11 +414,7 @@ export function startAgent(): void {
     return;
   }
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    ensureMainWindow();
   });
 
   app.whenReady().then(() => {
@@ -387,11 +430,44 @@ export function startAgent(): void {
     setupUpdater(() => mainWindow);
     setupAnnotation(() => getSelectedSourceId());
     setupAudit();
+    setupSignalClient({
+      getMainWindow: () => mainWindow,
+      // An unattended host that's been sitting in tray needs to come back up
+      // when a viewer dials in — otherwise the password challenge has no UI
+      // to land on. Spawning here means the window is ready by the time the
+      // password-verify follow-up arrives a few hundred ms later.
+      onIncomingConnect: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+          createMainWindow(false);
+        } else if (!mainWindow.isVisible()) {
+          mainWindow.show();
+        }
+      },
+    });
     // If the previous run crashed mid-session, the user's wallpaper is still
     // blanked. Put it back before the window even shows up.
     restoreOnStartup().catch((err) => {
       console.warn('[Main] wallpaper startup recovery failed:', err);
     });
+
+    // Open the signal-server socket as soon as identity is ready. Lives in
+    // main so it survives the window getting destroyed when the user closes
+    // to tray — unattended hosts keep accepting incoming sessions.
+    try {
+      const store = getStore();
+      const settings = (store.get('settings') || {}) as AppSettings;
+      const id = (store.get('machineId') as string) || '';
+      const serverUrl = settings.signalServer || DEFAULT_SIGNAL_SERVER;
+      if (id) {
+        startSignalClient({
+          serverUrl,
+          machineId: id,
+          machineName: os.hostname(),
+        });
+      }
+    } catch (err) {
+      console.warn('[Main] startSignalClient failed:', err);
+    }
 
     // `--hidden` is added to argv when the auto-launch hook fires so the
     // unattended host comes up tray-only and doesn't blink a window in the
@@ -402,18 +478,23 @@ export function startAgent(): void {
       process.argv.includes('--hidden') ||
       app.getLoginItemSettings().wasOpenedAsHidden;
 
-    createMainWindow(launchedHidden);
+    // Skip the renderer entirely when launched hidden — main holds the
+    // signal-server connection on its own, so no UI is needed until the
+    // user clicks the tray or a viewer dials in.
+    if (!launchedHidden) {
+      createMainWindow(false);
+    }
     createTray();
 
     console.log('');
     console.log('  ◆ TITAN-XT Desktop App');
     console.log(`  Machine: ${os.hostname()}`);
-    console.log('  Ready.');
+    console.log(launchedHidden ? '  Ready (hidden — tray only).' : '  Ready.');
     console.log('');
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
+        createMainWindow(false);
       }
     });
   });
@@ -439,5 +520,8 @@ export function startAgent(): void {
     // Tear down the annotation overlay so it doesn't dangle as an orphan
     // transparent window on the desktop.
     closeAnnotationOverlay();
+    // Drop the signal-server socket cleanly so the server marks us offline
+    // immediately instead of waiting for the heartbeat to time out.
+    stopSignalClient();
   });
 }

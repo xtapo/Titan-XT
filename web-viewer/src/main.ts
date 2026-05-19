@@ -32,16 +32,124 @@ function showToast(message: string, kind: 'info' | 'error' | 'success' = 'info')
 
 // === Persisted partner id (last successful) ===
 const LAST_PARTNER_KEY = 'titan-xt:last-partner-id';
+// === Persisted recent partners list (cached sessions) ===
+// Stored as an LRU-style array of {id, name, lastConnectedAt} entries so the
+// login screen can offer quick-reconnect taps without retyping. Capped so a
+// long-running viewer doesn't blow up localStorage.
+const RECENT_PARTNERS_KEY = 'titan-xt:recent-partners';
+const RECENT_PARTNERS_MAX = 8;
+
+interface RecentPartner {
+  id: string;
+  alias?: string;
+  lastConnectedAt: number;
+  /** Number of successful connects — surfaced as a frequency hint. */
+  connectCount: number;
+}
+
+function loadRecentPartners(): RecentPartner[] {
+  try {
+    const raw = localStorage.getItem(RECENT_PARTNERS_KEY);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((e) => e && typeof e.id === 'string' && /^\d{9}$/.test(e.id))
+      .slice(0, RECENT_PARTNERS_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentPartners(list: RecentPartner[]): void {
+  try {
+    localStorage.setItem(RECENT_PARTNERS_KEY, JSON.stringify(list.slice(0, RECENT_PARTNERS_MAX)));
+  } catch {
+    // best-effort — quota exceeded would be bizarre at this size
+  }
+}
+
+function recordSuccessfulConnect(partnerId: string): void {
+  const list = loadRecentPartners();
+  const now = Date.now();
+  const existing = list.findIndex((e) => e.id === partnerId);
+  if (existing >= 0) {
+    list[existing] = {
+      ...list[existing],
+      lastConnectedAt: now,
+      connectCount: (list[existing].connectCount || 0) + 1,
+    };
+  } else {
+    list.unshift({ id: partnerId, lastConnectedAt: now, connectCount: 1 });
+  }
+  // Sort newest-first by last connect, then save.
+  list.sort((a, b) => b.lastConnectedAt - a.lastConnectedAt);
+  saveRecentPartners(list);
+}
+
+function removeRecentPartner(partnerId: string): void {
+  const list = loadRecentPartners().filter((e) => e.id !== partnerId);
+  saveRecentPartners(list);
+}
+
+function fmtRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return 'vừa xong';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} phút trước`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} giờ trước`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} ngày trước`;
+  return new Date(ts).toLocaleDateString();
+}
 
 function renderLogin() {
   const app = $<HTMLDivElement>('#app');
-  const lastPartner = localStorage.getItem(LAST_PARTNER_KEY) || '';
+  // Pre-fill from URL ?id= param (set by browser extension or shared link)
+  // first, then fall back to the persisted last-partner. Skip if it doesn't
+  // look like a 9-digit Titan-XT id so a stray query string doesn't clobber
+  // the form.
+  const urlId = (() => {
+    try {
+      const v = new URLSearchParams(window.location.search).get('id');
+      if (v && /^\d{9}$/.test(v.replace(/\D/g, ''))) return v.replace(/\D/g, '');
+    } catch {
+      // URL constructor not happy — ignore
+    }
+    return '';
+  })();
+  const lastPartner = urlId || localStorage.getItem(LAST_PARTNER_KEY) || '';
+  const recents = loadRecentPartners();
+  const offline = !navigator.onLine;
+  const recentsHtml = recents.length === 0
+    ? ''
+    : `
+      <div class="recents-section">
+        <div class="recents-header">
+          <span>Gần đây</span>
+          <button class="recents-clear" id="clearRecents" title="Xoá tất cả">Xoá hết</button>
+        </div>
+        <div class="recents-list">
+          ${recents
+            .map(
+              (r) => `
+              <button class="recent-item" data-id="${r.id}" title="Kết nối lại ${formatId(r.id)}">
+                <div class="recent-item-id">${formatId(r.id)}</div>
+                <div class="recent-item-meta">
+                  <span class="recent-item-time">${fmtRelativeTime(r.lastConnectedAt)}</span>
+                  <span class="recent-item-count">${r.connectCount}× phiên</span>
+                </div>
+                <button class="recent-item-remove" data-remove="${r.id}" title="Xoá">×</button>
+              </button>`,
+            )
+            .join('')}
+        </div>
+      </div>`;
   app.innerHTML = `
     <div class="login-screen">
       <div class="brand">
         <div class="brand-mark">◆ TITAN-XT</div>
         <div class="brand-sub">Mobile viewer</div>
       </div>
+      ${offline ? '<div class="offline-banner">📵 Đang offline — chỉ xem được lịch sử kết nối</div>' : ''}
       <div class="card">
         <div class="field">
           <label class="field-label" for="partnerId">Partner ID</label>
@@ -53,9 +161,10 @@ function renderLogin() {
           <input id="password" type="text" inputmode="text" autocomplete="off"
             maxlength="8" placeholder="abcd" />
         </div>
-        <button id="connectBtn" class="connect-btn">Kết nối</button>
+        <button id="connectBtn" class="connect-btn"${offline ? ' disabled' : ''}>Kết nối</button>
         <div id="status" class="status-line"></div>
       </div>
+      ${recentsHtml}
       <div class="server-row" id="serverStatus"><span class="status-dot offline"></span> Chưa kết nối máy chủ</div>
     </div>
   `;
@@ -102,6 +211,39 @@ function renderLogin() {
   passwordInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();
   });
+
+  // Recent partner taps prefill the form so the user only retypes the
+  // password (we never persist passwords to disk for security reasons).
+  document.querySelectorAll<HTMLButtonElement>('.recent-item').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      // Ignore clicks on the inline remove button.
+      if ((e.target as HTMLElement).closest('[data-remove]')) return;
+      const id = btn.dataset.id || '';
+      partnerInput.value = formatId(id);
+      passwordInput.focus();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.remove || '';
+      removeRecentPartner(id);
+      renderLogin();
+    });
+  });
+
+  document.getElementById('clearRecents')?.addEventListener('click', () => {
+    if (!confirm('Xoá toàn bộ lịch sử kết nối gần đây?')) return;
+    localStorage.removeItem(RECENT_PARTNERS_KEY);
+    renderLogin();
+  });
+
+  // Re-render the screen when network state flips so the offline banner
+  // appears/disappears without forcing the user to reload the page.
+  const refreshOnNetworkChange = () => renderLogin();
+  window.addEventListener('online', refreshOnNetworkChange, { once: true });
+  window.addEventListener('offline', refreshOnNetworkChange, { once: true });
 }
 
 // === Session orchestration ===
@@ -118,6 +260,7 @@ async function runSession(
         if (state === 'connected') {
           showToast('Đã kết nối', 'success');
           localStorage.setItem(LAST_PARTNER_KEY, partnerId);
+          recordSuccessfulConnect(partnerId);
         } else if (state === 'failed' || state === 'disconnected') {
           // Surfaced via onDisconnect once the manager tears down.
         }

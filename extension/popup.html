@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Titan-XT Quick Connect</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup">
+    <header class="popup-header">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-text">TITAN-XT</span>
+      </div>
+      <button id="settingsBtn" class="icon-btn" title="Cài đặt">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+        </svg>
+      </button>
+    </header>
+
+    <main class="popup-body">
+      <div class="field">
+        <label class="field-label" for="partnerId">Partner ID</label>
+        <input id="partnerId" type="text" inputmode="numeric" autocomplete="off"
+               maxlength="11" placeholder="123 456 789" />
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="password">Password</label>
+        <input id="password" type="text" inputmode="text" autocomplete="off"
+               maxlength="8" placeholder="abcd" />
+      </div>
+
+      <button id="connectBtn" class="primary-btn">Kết nối</button>
+      <div id="status" class="status"></div>
+
+      <div id="recentsSection" class="recents hidden">
+        <div class="recents-header">
+          <span>Gần đây</span>
+          <button id="clearRecents" class="text-btn" title="Xoá tất cả">Xoá</button>
+        </div>
+        <div id="recentsList" class="recents-list"></div>
+      </div>
+    </main>
+
+    <footer class="popup-footer">
+      <span class="footer-text">Mở viewer trên tab mới</span>
+      <span class="footer-shortcut">Ctrl+Shift+Y</span>
+    </footer>
+
+    <!-- Settings drawer -->
+    <div id="settingsPanel" class="settings hidden">
+      <div class="settings-row">
+        <label class="field-label" for="serverUrl">Signal server</label>
+        <input id="serverUrl" type="url" placeholder="https://titan.xtapo.org" />
+      </div>
+      <div class="settings-row">
+        <label class="field-label" for="viewerUrl">Viewer URL</label>
+        <input id="viewerUrl" type="url" placeholder="https://view.titan-xt.example.com" />
+        <p class="hint">Nơi mở phiên xem khi bấm Kết nối. Mặc định dùng signal server.</p>
+      </div>
+      <div class="settings-actions">
+        <button id="cancelSettings" class="text-btn">Hủy</button>
+        <button id="saveSettings" class="primary-btn">Lưu</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

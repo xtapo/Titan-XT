@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Titan-XT Quick Connect",
+  "short_name": "Titan-XT",
+  "version": "1.0.0",
+  "description": "Mở phiên Titan-XT từ thanh công cụ trình duyệt — gõ ID + mật khẩu rồi connect.",
+  "default_locale": "vi",
+
+  "action": {
+    "default_title": "Titan-XT Quick Connect",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon.svg",
+      "32": "icons/icon.svg",
+      "48": "icons/icon.svg",
+      "128": "icons/icon.svg"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon.svg",
+    "32": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "128": "icons/icon.svg"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "permissions": ["storage", "contextMenus", "tabs"],
+
+  "host_permissions": ["https://titan.xtapo.org/*"],
+
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Mở popup Titan-XT"
+    }
+  },
+
+  "minimum_chrome_version": "102"
+}
