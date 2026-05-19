@@ -878,11 +878,11 @@ export class ConnectionManager {
         const fullBase64 = entry.chunks.join('');
         const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64, entry.targetHint);
         if (result?.success) {
-          updateFileProgress(msg.fileId, 100, 'complete');
+          updateFileProgress(msg.fileId, 100, 'complete', result.path);
           const where = entry.targetHint === 'desktop' ? ' (Desktop)' : '';
           showToast(`Đã nhận: ${entry.name}${where}`, 'success');
           auditLog('file-received', `Nhận file: ${entry.name}`, {
-            details: { fileName: entry.name, fileSize: entry.size, target: entry.targetHint || 'default' },
+            details: { fileName: entry.name, fileSize: entry.size, target: entry.targetHint || 'default', path: result.path || '' },
           });
         } else {
           updateFileProgress(msg.fileId, 0, 'error');

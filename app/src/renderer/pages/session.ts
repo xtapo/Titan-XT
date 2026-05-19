@@ -1654,6 +1654,7 @@ export function addFileEntry(
       <div class="file-item-size" data-size>${sizeStr} — ${status === 'sending' ? 'Đang gửi' : status === 'receiving' ? 'Đang nhận' : 'Hoàn thành'}</div>
       <div class="file-progress"><div class="file-progress-bar" data-bar style="width: ${status === 'complete' ? '100' : '0'}%"></div></div>
     </div>
+    <div class="file-item-actions" data-actions></div>
   `;
   list.appendChild(item);
 
@@ -1707,6 +1708,7 @@ function addHostPanelFile(
           <div class="host-panel-file-progress-bar" data-bar
                style="width: ${status === 'complete' ? '100' : '0'}%"></div>
         </div>
+        <div class="host-panel-file-actions" data-actions></div>
       </div>
     </div>
   `;
@@ -1722,11 +1724,14 @@ function addHostPanelFile(
  * Update progress bar + status label for an in-flight transfer.
  * @param percent 0-100
  * @param status display status text
+ * @param savedPath absolute path on disk once status === 'complete' (receiver-side).
+ *                  Used to render an "Open folder" / "Show in Explorer" button.
  */
 export function updateFileProgress(
   fileId: string,
   percent: number,
-  status: 'sending' | 'receiving' | 'complete' | 'error'
+  status: 'sending' | 'receiving' | 'complete' | 'error',
+  savedPath?: string,
 ): void {
   const labelMap: Record<string, string> = {
     sending: 'Đang gửi',
@@ -1747,6 +1752,9 @@ export function updateFileProgress(
       const sizePrefix = original.split('—')[0]?.trim() || '';
       sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
     }
+    if (status === 'complete' && savedPath) {
+      renderFileRowActions(row.querySelector('[data-actions]') as HTMLElement | null, savedPath);
+    }
     return;
   }
 
@@ -1762,6 +1770,31 @@ export function updateFileProgress(
     const sizePrefix = original.split('—')[0]?.trim() || '';
     sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
   }
+  if (status === 'complete' && savedPath) {
+    renderFileRowActions(row.querySelector('[data-actions]') as HTMLElement | null, savedPath);
+  }
+}
+
+/**
+ * Inject "Mở thư mục" + "Mở file" buttons next to a completed receive entry.
+ * Both shell out to the main-process `file:showInFolder` IPC, which opens
+ * Explorer / Finder with the file pre-selected.
+ */
+function renderFileRowActions(container: HTMLElement | null, savedPath: string): void {
+  if (!container) return;
+  // Idempotent — re-rendering on a row that already has buttons is a no-op.
+  if (container.querySelector('[data-action="open-folder"]')) return;
+  container.innerHTML = `
+    <button class="file-action-btn" data-action="open-folder" title="Mở thư mục chứa file">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+      </svg>
+      <span>Mở thư mục</span>
+    </button>
+  `;
+  container.querySelector('[data-action="open-folder"]')?.addEventListener('click', () => {
+    window.titanAPI?.file?.showInFolder?.(savedPath);
+  });
 }
 
 /**
