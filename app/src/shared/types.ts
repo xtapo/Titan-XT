@@ -103,6 +103,13 @@ export interface AppSettings {
    * without anyone clicking the icon. Effective only with the unattended flag.
    */
   unattendedAutoStart: boolean;
+  /**
+   * Append session events to the local audit log. Surfaced in the Settings
+   * page. Defaults to true — the host owner usually wants a record of what
+   * happened during a remote-support call. Disabling it stops new appends
+   * but does not erase existing logs.
+   */
+  auditEnabled: boolean;
 }
 
 export interface SessionState {

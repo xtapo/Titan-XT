@@ -28,6 +28,7 @@ import type {
   AnnotationMessage,
   AnnotationTool,
 } from '../../shared/protocol';
+import { auditLog } from './audit-logger';
 
 interface ViewerStroke {
   id: string;
@@ -40,6 +41,9 @@ interface ViewerStroke {
 }
 
 const FADE_TAIL_MS = 1200;
+// Cap how many strokes we keep in the undo stack to bound memory during a
+// long session of heavy drawing. Older strokes silently roll off.
+const UNDO_LIMIT = 32;
 
 export class AnnotationController {
   private canvas: HTMLCanvasElement | null = null;
@@ -55,12 +59,30 @@ export class AnnotationController {
   private currentStrokeId: string | null = null;
   private lastPointSentAt: number = 0;
   private rafHandle: number | null = null;
+  // Order strokes were ended in, oldest first. Used by undo to find the most
+  // recent finished stroke regardless of how the Map happens to be iterated.
+  private completedOrder: string[] = [];
 
   // Bound listener handles so add/remove pair up cleanly.
   private boundPointerDown = (e: PointerEvent) => this.onPointerDown(e);
   private boundPointerMove = (e: PointerEvent) => this.onPointerMove(e);
   private boundPointerUp = (e: PointerEvent) => this.onPointerUp(e);
   private boundResize = () => this.resizeCanvas();
+  // Ctrl+Z while drawing mode is active. Bound at window level so we can
+  // catch the shortcut even when the canvas isn't focused (the canvas can't
+  // receive keyboard focus reliably across browsers).
+  private boundKeyDown = (e: KeyboardEvent) => {
+    if (!this.active) return;
+    const isUndo =
+      (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+    if (isUndo) {
+      e.preventDefault();
+      this.undo();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      this.disable();
+    }
+  };
 
   // Sender wired by the page once a session connects. Kept as a callback so
   // this module doesn't pull a circular dep on ConnectionManager.
@@ -125,8 +147,9 @@ export class AnnotationController {
     this.canvas.addEventListener('pointermove', this.boundPointerMove);
     this.canvas.addEventListener('pointerup', this.boundPointerUp);
     this.canvas.addEventListener('pointercancel', this.boundPointerUp);
+    window.addEventListener('keydown', this.boundKeyDown, { capture: true });
     this.scheduleRender();
-    showToast('Đang vẽ — gestures sẽ không điều khiển máy đối tác', 'info');
+    showToast('Đang vẽ — Ctrl+Z hoàn tác · Esc thoát', 'info');
   }
 
   disable(): void {
@@ -140,6 +163,7 @@ export class AnnotationController {
       this.canvas.removeEventListener('pointerup', this.boundPointerUp);
       this.canvas.removeEventListener('pointercancel', this.boundPointerUp);
     }
+    window.removeEventListener('keydown', this.boundKeyDown, { capture: true } as any);
     if (this.rafHandle !== null) {
       cancelAnimationFrame(this.rafHandle);
       this.rafHandle = null;
@@ -153,11 +177,66 @@ export class AnnotationController {
 
   /** Wipe local + remote strokes. Bound to the toolbar's "clear" button. */
   clear(): void {
+    const had = this.strokes.size;
     this.strokes.clear();
+    this.completedOrder = [];
     if (this.canvas && this.ctx) {
       this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     }
     this.send?.({ type: 'annotation', action: 'clear' });
+    if (had > 0) {
+      auditLog('annotation-clear', `Xóa ${had} nét vẽ`, {
+        details: { strokeCount: had },
+      });
+    }
+  }
+
+  /**
+   * Drop the most recently finished stroke. Pops one entry off the undo
+   * stack and tells the host to forget the matching stroke id so the
+   * overlay stays in sync. Strokes still being drawn aren't touched.
+   */
+  undo(): void {
+    const id = this.completedOrder.pop();
+    if (!id) return;
+    if (this.strokes.delete(id)) {
+      // The host overlay rebuilds on every clear/begin, so the simplest
+      // way to mirror the local undo is to wipe and replay everything we
+      // still have. With UNDO_LIMIT=32 strokes this is fast enough that
+      // users won't notice a flicker.
+      this.send?.({ type: 'annotation', action: 'clear' });
+      for (const id2 of this.completedOrder) {
+        const s = this.strokes.get(id2);
+        if (!s) continue;
+        const first = s.points[0];
+        if (!first) continue;
+        this.send?.({
+          type: 'annotation',
+          action: 'begin',
+          strokeId: s.id,
+          tool: s.tool,
+          color: s.color,
+          width: s.width,
+          x: first.x,
+          y: first.y,
+        });
+        for (let i = 1; i < s.points.length; i += 1) {
+          this.send?.({
+            type: 'annotation',
+            action: 'point',
+            strokeId: s.id,
+            x: s.points[i].x,
+            y: s.points[i].y,
+          });
+        }
+        this.send?.({ type: 'annotation', action: 'end', strokeId: s.id });
+      }
+      this.scheduleRender();
+    }
+  }
+
+  setLineWidth(w: number): void {
+    if (Number.isFinite(w) && w > 0) this.width = Math.min(24, Math.max(1, w));
   }
 
   // === Toolbar =============================================================
@@ -192,6 +271,18 @@ export class AnnotationController {
       <button class="annotation-toolbar-color" data-color="#34d399" style="background:#34d399" title="Lá"></button>
       <button class="annotation-toolbar-color" data-color="#3b82f6" style="background:#3b82f6" title="Lam"></button>
       <span class="annotation-toolbar-sep"></span>
+      <select class="annotation-toolbar-width" data-action="width" title="Độ dày nét">
+        <option value="2">Mỏng</option>
+        <option value="4" selected>Vừa</option>
+        <option value="8">Dày</option>
+        <option value="14">Rất dày</option>
+      </select>
+      <span class="annotation-toolbar-sep"></span>
+      <button class="annotation-toolbar-btn" data-action="undo" title="Hoàn tác (Ctrl+Z)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/>
+        </svg>
+      </button>
       <button class="annotation-toolbar-btn" data-action="clear" title="Xóa hết">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
@@ -217,10 +308,21 @@ export class AnnotationController {
         this.color = c;
       } else if (a === 'clear') {
         this.clear();
+      } else if (a === 'undo') {
+        this.undo();
       } else if (a === 'exit') {
         this.disable();
       }
       this.refreshToolbarSelection(bar);
+    });
+
+    // Width selector — uses a native <select> so it stays accessible without
+    // needing a custom popover. Bound separately because change events don't
+    // bubble through the click handler above.
+    const widthSel = bar.querySelector('[data-action="width"]') as HTMLSelectElement | null;
+    widthSel?.addEventListener('change', () => {
+      const v = Number(widthSel.value);
+      if (Number.isFinite(v) && v > 0) this.setLineWidth(v);
     });
 
     return bar;
@@ -356,6 +458,13 @@ export class AnnotationController {
       }
       stroke.ended = true;
       stroke.startedAt = Date.now();
+      // Track completion order so the undo stack can pop the most recent
+      // finished stroke without depending on Map iteration order.
+      this.completedOrder.push(stroke.id);
+      while (this.completedOrder.length > UNDO_LIMIT) {
+        const dropped = this.completedOrder.shift();
+        if (dropped) this.strokes.delete(dropped);
+      }
     }
     this.send?.({
       type: 'annotation',

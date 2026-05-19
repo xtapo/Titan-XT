@@ -12,6 +12,7 @@ import { setupRecording, closeAllRecordings } from './recording';
 import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper';
 import { setupUpdater, checkForUpdatesWithDialog } from './updater';
 import { setupAnnotation, closeAnnotationOverlay } from './annotation';
+import { setupAudit } from './audit';
 
 // Chromium ships with H.265 / HEVC over WebRTC gated behind feature flags.
 // Without these, RTCRtpSender.getCapabilities('video') doesn't list HEVC and
@@ -334,6 +335,7 @@ export function startAgent(): void {
     setupWallpaper();
     setupUpdater(() => mainWindow);
     setupAnnotation(() => getSelectedSourceId());
+    setupAudit();
     // If the previous run crashed mid-session, the user's wallpaper is still
     // blanked. Put it back before the window even shows up.
     restoreOnStartup().catch((err) => {

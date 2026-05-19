@@ -19,6 +19,7 @@ const defaultSettings: AppSettings = {
   unattendedPasswordHash: '',
   unattendedPasswordSalt: '',
   unattendedAutoStart: false,
+  auditEnabled: true,
 };
 
 /**

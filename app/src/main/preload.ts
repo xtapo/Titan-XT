@@ -129,6 +129,18 @@ contextBridge.exposeInMainWorld('titanAPI', {
     close: () => ipcRenderer.invoke('annotation:close'),
   },
 
+  // === Audit Log ===
+  // Local-only append-only event journal. Surfaced in the Settings page so
+  // the machine owner can see what happened during remote-support sessions.
+  audit: {
+    isEnabled: () => ipcRenderer.invoke('audit:isEnabled') as Promise<boolean>,
+    append: (event: any) => ipcRenderer.invoke('audit:append', event) as Promise<{ success: boolean; disabled?: boolean }>,
+    read: (limit?: number) => ipcRenderer.invoke('audit:read', limit) as Promise<any[]>,
+    clear: () => ipcRenderer.invoke('audit:clear') as Promise<{ success: boolean }>,
+    export: () => ipcRenderer.invoke('audit:export') as Promise<{ success: boolean; path?: string; canceled?: boolean; error?: string }>,
+    openFolder: () => ipcRenderer.invoke('audit:openFolder') as Promise<{ success: boolean; path?: string; error?: string }>,
+  },
+
   // === App Info ===
   app: {
     getInfo: () => ipcRenderer.invoke('app:getInfo'),

@@ -8,6 +8,7 @@ import { QUALITY_PROFILES, QualityPreset, CODEC_LABELS, VideoCodec } from '../..
 import { ConnectionManager } from '../lib/connection';
 import { SessionRecorder, formatElapsed, RecorderState } from '../lib/recorder';
 import { AnnotationController } from '../lib/annotation';
+import { auditLog } from '../lib/audit-logger';
 
 type DisplayFit = 'contain' | 'cover' | 'fill';
 let isHostMode = false;
@@ -210,7 +211,15 @@ export function renderSessionPage() {
                 <span class="dropdown-item-label">Bật chế độ vẽ</span>
                 <span class="dropdown-item-check hidden" data-annotate-check>✓</span>
               </button>
+              <button class="dropdown-item" data-annotate="undo">Hoàn tác nét vẽ cuối (Ctrl+Z)</button>
               <button class="dropdown-item" data-annotate="clear">Xóa hết các nét vẽ</button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Đường truyền</div>
+              <button class="dropdown-item" data-metrics="toggle">Bật/tắt bảng đồng hồ đo</button>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-section-label">Clipboard</div>
+              <button class="dropdown-item" data-clipboard="pull">Lấy clipboard từ máy đối tác</button>
+              <button class="dropdown-item" data-clipboard="push">Đẩy clipboard sang máy đối tác</button>
             </div>
           </div>
 
@@ -386,8 +395,27 @@ function setupSessionEvents() {
       toggleRemoteAudio();
     } else if (annotate === 'toggle') {
       toggleAnnotationMode();
+    } else if (annotate === 'undo') {
+      annotationCtl?.undo();
     } else if (annotate === 'clear') {
       annotationCtl?.clear();
+    } else if (item.dataset.metrics === 'toggle') {
+      // Lazy-import so the metrics module's bundle work doesn't run unless
+      // the user actually opens the panel during a session.
+      import('../lib/metrics').then(({ toggleMetricsPanel }) => toggleMetricsPanel());
+    } else if (item.dataset.clipboard === 'pull') {
+      const ok = window.connectionManager?.pullHostClipboard();
+      showToast(
+        ok ? 'Đã yêu cầu clipboard từ máy đối tác' : 'Chưa kết nối',
+        ok ? 'success' : 'info',
+      );
+    } else if (item.dataset.clipboard === 'push') {
+      window.connectionManager?.pushClipboardToHost?.().then((ok) => {
+        showToast(
+          ok ? 'Đã gửi clipboard sang máy đối tác' : 'Không có nội dung clipboard',
+          ok ? 'success' : 'info',
+        );
+      });
     } else if (view === 'fullscreen') {
       const wrapper = document.getElementById('video-wrapper');
       if (wrapper) {
@@ -823,6 +851,7 @@ async function toggleSessionRecording(): Promise<void> {
 
   if (recorder.isRecording) {
     await recorder.stop();
+    auditLog('recording-stop', 'Dừng ghi phiên');
     return;
   }
 
@@ -835,6 +864,9 @@ async function toggleSessionRecording(): Promise<void> {
 
   recorderPartnerId = window.connectionManager?.partnerIdForRecording || recorderPartnerId;
   await recorder.start(stream, recorderPartnerId);
+  auditLog('recording-start', 'Bắt đầu ghi phiên', {
+    details: { partnerId: recorderPartnerId },
+  });
 }
 
 /**

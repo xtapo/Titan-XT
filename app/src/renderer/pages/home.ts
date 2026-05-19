@@ -552,6 +552,28 @@ async function openSettingsModal() {
             </div>
           </div>
           <div class="settings-section">
+            <h3>Nhật ký kiểm toán</h3>
+            <p class="field-hint" style="margin-top:-4px;margin-bottom:12px">
+              Ghi lại mọi sự kiện trong phiên hỗ trợ (đăng nhập, đổi chất lượng, gửi/nhận file,
+              khóa/mở khóa điều khiển, đồng bộ clipboard...) để bạn có thể xem lại sau.
+              Nhật ký chỉ lưu cục bộ, không gửi đi đâu.
+            </p>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-audit-enabled" />
+                <span>Bật nhật ký kiểm toán</span>
+              </label>
+            </div>
+            <div class="settings-field">
+              <div class="folder-row">
+                <button class="btn-secondary" id="btn-audit-view">Xem nhật ký...</button>
+                <button class="btn-secondary" id="btn-audit-export">Xuất file</button>
+                <button class="btn-text" id="btn-audit-folder">Mở thư mục</button>
+                <button class="btn-text" id="btn-audit-clear" title="Xóa toàn bộ nhật ký">Xóa</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section">
             <h3>Truy cập không giám sát</h3>
             <p class="field-hint" style="margin-top:-4px;margin-bottom:12px">
               Cho phép kỹ thuật viên kết nối bằng mật khẩu cố định khi không có ai ở máy này.
@@ -668,6 +690,33 @@ async function openSettingsModal() {
       const row = document.getElementById('settings-unattended-password-row');
       if (row) row.style.display = checked ? '' : 'none';
     });
+
+    // Audit log actions. Wired once at modal-construction time; the modal is
+    // cached in the DOM after first open so we don't double-bind on re-open.
+    document.getElementById('settings-audit-enabled')?.addEventListener('change', async (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      try {
+        await window.titanAPI?.settings?.update({ auditEnabled: checked });
+      } catch {
+        // best-effort
+      }
+    });
+    document.getElementById('btn-audit-view')?.addEventListener('click', () => {
+      openAuditViewer();
+    });
+    document.getElementById('btn-audit-export')?.addEventListener('click', async () => {
+      const r = await window.titanAPI?.audit?.export?.();
+      if (r?.success) showToast(`Đã xuất nhật ký: ${r.path}`, 'success');
+      else if (!r?.canceled) showToast(r?.error || 'Lỗi xuất nhật ký', 'error');
+    });
+    document.getElementById('btn-audit-folder')?.addEventListener('click', async () => {
+      await window.titanAPI?.audit?.openFolder?.();
+    });
+    document.getElementById('btn-audit-clear')?.addEventListener('click', async () => {
+      if (!confirm('Xoá toàn bộ nhật ký kiểm toán? Hành động này không thể hoàn tác.')) return;
+      await window.titanAPI?.audit?.clear?.();
+      showToast('Đã xoá nhật ký', 'success');
+    });
   }
 
   // Load current values
@@ -698,6 +747,10 @@ async function openSettingsModal() {
         : 'Chưa đặt mật khẩu';
     }
     if (unAutoStart) unAutoStart.checked = !!auto?.enabled;
+
+    // Audit toggle reflects the persisted setting (defaults to ON).
+    const auditInput = document.getElementById('settings-audit-enabled') as HTMLInputElement | null;
+    if (auditInput) auditInput.checked = settings?.auditEnabled !== false;
   } catch {
     // best-effort
   }
@@ -799,4 +852,160 @@ function updateStatus(status: 'online' | 'offline' | 'connecting') {
     };
     text.textContent = labels[status];
   }
+}
+
+// === Audit log viewer ===
+
+interface AuditEntryView {
+  id: string;
+  timestamp: number;
+  role: 'host' | 'viewer';
+  type: string;
+  message: string;
+  partnerId?: string;
+  partnerName?: string;
+  severity?: 'info' | 'warn' | 'critical';
+}
+
+const AUDIT_TYPE_LABELS: Record<string, string> = {
+  'session-start': 'Bắt đầu phiên',
+  'session-end': 'Kết thúc phiên',
+  'auth-success': 'Xác thực OK',
+  'auth-failure': 'Xác thực thất bại',
+  'control-lock': 'Khóa điều khiển',
+  'control-unlock': 'Mở khóa điều khiển',
+  'mode-change': 'Đổi chế độ',
+  'monitor-switch': 'Đổi màn hình',
+  'quality-change': 'Đổi chất lượng',
+  'codec-change': 'Đổi codec',
+  'remote-action': 'Lệnh hệ thống',
+  'file-sent': 'Gửi file',
+  'file-received': 'Nhận file',
+  'clipboard-sync': 'Đồng bộ clipboard',
+  'annotation-clear': 'Xóa nét vẽ',
+  'wallpaper-toggle': 'Toggle hình nền',
+  'recording-start': 'Bắt đầu ghi',
+  'recording-stop': 'Dừng ghi',
+};
+
+function fmtAuditTime(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${pad(d.getDate())}/${pad(d.getMonth() + 1)}`;
+}
+
+/**
+ * Open a modal listing recent audit entries. Read-only — wipe / export
+ * actions live in the parent settings modal so this stays a simple viewer.
+ */
+async function openAuditViewer() {
+  let modal = document.getElementById('audit-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'audit-modal';
+    modal.className = 'settings-modal';
+    modal.innerHTML = `
+      <div class="settings-backdrop" data-close></div>
+      <div class="settings-dialog audit-dialog">
+        <div class="settings-header">
+          <h2>Nhật ký kiểm toán</h2>
+          <button class="btn-icon" data-close>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="settings-body audit-body">
+          <div class="audit-toolbar">
+            <input type="search" id="audit-search" class="input-field" placeholder="Lọc theo nội dung / partner..." />
+            <select id="audit-filter-type" class="input-field">
+              <option value="">Tất cả loại</option>
+              ${Object.entries(AUDIT_TYPE_LABELS)
+                .map(([k, v]) => `<option value="${k}">${v}</option>`)
+                .join('')}
+            </select>
+            <button class="btn-text" id="btn-audit-refresh">Làm mới</button>
+          </div>
+          <div class="audit-list" id="audit-list">
+            <div class="audit-empty">Đang tải...</div>
+          </div>
+        </div>
+        <div class="settings-footer">
+          <button class="btn-text" data-close>Đóng</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelectorAll('[data-close]').forEach((el) =>
+      el.addEventListener('click', () => modal!.classList.remove('open'))
+    );
+    document.getElementById('btn-audit-refresh')?.addEventListener('click', () => {
+      loadAuditEntries();
+    });
+    document.getElementById('audit-search')?.addEventListener('input', () => {
+      renderAuditList();
+    });
+    document.getElementById('audit-filter-type')?.addEventListener('change', () => {
+      renderAuditList();
+    });
+  }
+
+  modal.classList.add('open');
+  await loadAuditEntries();
+}
+
+let auditCache: AuditEntryView[] = [];
+
+async function loadAuditEntries() {
+  const list = document.getElementById('audit-list');
+  if (list) list.innerHTML = '<div class="audit-empty">Đang tải...</div>';
+  try {
+    auditCache = (await window.titanAPI?.audit?.read?.(500)) || [];
+  } catch {
+    auditCache = [];
+  }
+  renderAuditList();
+}
+
+function renderAuditList() {
+  const list = document.getElementById('audit-list');
+  if (!list) return;
+  const search = (document.getElementById('audit-search') as HTMLInputElement | null)?.value?.trim().toLowerCase() || '';
+  const typeFilter = (document.getElementById('audit-filter-type') as HTMLSelectElement | null)?.value || '';
+
+  const filtered = auditCache.filter((entry) => {
+    if (typeFilter && entry.type !== typeFilter) return false;
+    if (!search) return true;
+    const hay = `${entry.message} ${entry.partnerId || ''} ${entry.partnerName || ''}`.toLowerCase();
+    return hay.includes(search);
+  });
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="audit-empty">Không có sự kiện nào.</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map((e) => {
+    const sev = e.severity === 'critical' ? 'audit-row-critical'
+              : e.severity === 'warn' ? 'audit-row-warn'
+              : '';
+    const partner = e.partnerName ? `${e.partnerName} (${e.partnerId || '?'})` : (e.partnerId || '');
+    const typeLabel = AUDIT_TYPE_LABELS[e.type] || e.type;
+    const role = e.role === 'host' ? 'Tôi (host)' : 'Tôi (viewer)';
+    const safe = (s: string) => s.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c));
+    return `
+      <div class="audit-row ${sev}">
+        <div class="audit-row-time">${fmtAuditTime(e.timestamp)}</div>
+        <div class="audit-row-body">
+          <div class="audit-row-message">${safe(e.message)}</div>
+          <div class="audit-row-meta">
+            <span class="audit-tag">${typeLabel}</span>
+            <span class="audit-tag audit-tag-role">${role}</span>
+            ${partner ? `<span class="audit-tag audit-tag-partner">${safe(partner)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }

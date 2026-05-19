@@ -277,3 +277,73 @@ body.host-mode #page-home { display: none; }
   padding: 14px 22px;
   border-top: 1px solid var(--border, rgba(255,255,255,0.08));
 }
+
+/* === Audit log viewer (extends settings-dialog) === */
+.audit-dialog { width: min(720px, 94vw); }
+.audit-body { gap: 12px; }
+.audit-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.audit-toolbar .input-field {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  font-size: 12px;
+}
+.audit-toolbar select.input-field {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 140px;
+}
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.audit-empty {
+  padding: 24px;
+  text-align: center;
+  color: rgba(255,255,255,0.5);
+  font-size: 12px;
+}
+.audit-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 12px;
+}
+.audit-row:last-child { border-bottom: none; }
+.audit-row-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  flex: 0 0 110px;
+  padding-top: 1px;
+}
+.audit-row-body { flex: 1; min-width: 0; }
+.audit-row-message {
+  color: #fff;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.audit-row-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.audit-tag {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+}
+.audit-tag-role { background: rgba(124, 92, 255, 0.16); color: #b9a4ff; }
+.audit-tag-partner { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; }
+.audit-row-warn { background: rgba(251, 191, 36, 0.06); }
+.audit-row-warn .audit-row-message { color: #fde68a; }
+.audit-row-critical { background: rgba(248, 113, 113, 0.08); }
+.audit-row-critical .audit-row-message { color: #fca5a5; }

@@ -41,6 +41,8 @@ import {
   FileChunkMessage,
   AnnotationMessage,
 } from '../../shared/protocol';
+import { auditLog, setActiveAuditSession } from './audit-logger';
+import { pushMetricsSample, resetMetricsHistory } from './metrics';
 
 export class ConnectionManager {
   private socket: Socket | null = null;
@@ -288,6 +290,25 @@ export class ConnectionManager {
     this.role = 'host';
     this.partnerId = viewerId;
 
+    // Mark the audit session so events logged below inherit role/partner.
+    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setActiveAuditSession({
+      sessionId,
+      role: 'host',
+      partnerId: viewerId,
+      partnerName: this.incomingViewerName || '',
+    });
+    auditLog('session-start', `Phiên bắt đầu — đối tác kết nối`, {
+      role: 'host',
+      partnerId: viewerId,
+      partnerName: this.incomingViewerName || '',
+      severity: 'info',
+    });
+    auditLog('auth-success', 'Mật khẩu xác thực thành công', {
+      role: 'host',
+      partnerId: viewerId,
+    });
+
     // Optionally hide the desktop wallpaper for the duration of the session
     // — a flat solid background compresses to almost nothing, freeing
     // bitrate for the windows the viewer actually cares about. Restored
@@ -393,6 +414,26 @@ export class ConnectionManager {
     this.role = 'viewer';
     this.partnerId = hostId;
 
+    // Reset the metrics chart for the new session so the previous run's
+    // history doesn't bleed into the panel.
+    resetMetricsHistory();
+
+    // Mark the audit session for the viewer side so log entries on this
+    // machine record what the technician did rather than what was done to
+    // the host.
+    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setActiveAuditSession({
+      sessionId,
+      role: 'viewer',
+      partnerId: hostId,
+      partnerName: '',
+    });
+    auditLog('session-start', `Bắt đầu phiên với ${hostId}`, {
+      role: 'viewer',
+      partnerId: hostId,
+      details: { mode },
+    });
+
     const videoEl = document.getElementById('remote-video') as HTMLVideoElement;
 
     this.peer = new PeerConnection({
@@ -470,6 +511,7 @@ export class ConnectionManager {
             ? `${mbps.toFixed(1)}Mbps`
             : `${Math.round(stats.bitrate / 1000)}kbps`;
         }
+        pushMetricsSample(stats, this.currentQuality);
         this.evaluateAdaptiveQuality(stats.latency, stats.packetLoss);
       },
     });
@@ -507,6 +549,11 @@ export class ConnectionManager {
     if (this.role !== 'viewer') return false;
     if (this.viewerMode === mode) return true;
     this.viewerMode = mode;
+
+    auditLog('mode-change', `Chuyển sang chế độ ${mode === 'control' ? 'điều khiển' : 'chỉ xem'}`, {
+      role: 'viewer',
+      details: { mode },
+    });
 
     const videoEl = document.getElementById('remote-video') as HTMLVideoElement | null;
     if (mode === 'control') {
@@ -559,6 +606,9 @@ export class ConnectionManager {
   setControlLocked(locked: boolean): boolean {
     if (this.role !== 'host') return false;
     this.controlLocked = locked;
+    auditLog(locked ? 'control-lock' : 'control-unlock',
+      locked ? 'Đã khóa quyền điều khiển' : 'Đã mở khóa quyền điều khiển',
+      { role: 'host', severity: locked ? 'warn' : 'info' });
     return this.peer?.send(CHANNEL_SYSTEM, {
       type: 'system',
       action: 'control-lock',
@@ -604,7 +654,15 @@ export class ConnectionManager {
   private async verifyPassword(hash: string, nonce: string, viewerId?: string): Promise<boolean> {
     try {
       if (window.titanAPI?.identity) {
-        return await (window as any).titanAPI.identity.verifyPassword?.(hash, nonce, viewerId) ?? false;
+        const ok = await (window as any).titanAPI.identity.verifyPassword?.(hash, nonce, viewerId) ?? false;
+        if (!ok) {
+          auditLog('auth-failure', 'Xác thực mật khẩu thất bại', {
+            role: 'host',
+            partnerId: viewerId,
+            severity: 'warn',
+          });
+        }
+        return ok;
       }
     } catch {
       return false;
@@ -745,6 +803,9 @@ export class ConnectionManager {
       type: 'file', action: 'complete', fileId,
     });
     updateFileProgress(fileId, 100, 'complete');
+    auditLog('file-sent', `Gửi file: ${fileName}`, {
+      details: { fileName, fileSize, targetHint: targetHint || 'default' },
+    });
   }
 
   /**
@@ -820,6 +881,9 @@ export class ConnectionManager {
           updateFileProgress(msg.fileId, 100, 'complete');
           const where = entry.targetHint === 'desktop' ? ' (Desktop)' : '';
           showToast(`Đã nhận: ${entry.name}${where}`, 'success');
+          auditLog('file-received', `Nhận file: ${entry.name}`, {
+            details: { fileName: entry.name, fileSize: entry.size, target: entry.targetHint || 'default' },
+          });
         } else {
           updateFileProgress(msg.fileId, 0, 'error');
           showToast(`Lỗi lưu ${entry.name}`, 'error');
@@ -854,6 +918,10 @@ export class ConnectionManager {
     this.adaptiveEnabled = false;
     this.adaptiveBadSamples = 0;
     this.adaptiveGoodSamples = 0;
+    auditLog('quality-change', `Đổi chất lượng: ${preset}`, {
+      role: 'viewer',
+      details: { preset },
+    });
     return this.peer?.send(CHANNEL_SYSTEM, {
       type: 'system',
       action: 'quality',
@@ -885,6 +953,10 @@ export class ConnectionManager {
   requestCodec(codec: VideoCodec): boolean {
     if (this.role !== 'viewer') return false;
     this.currentCodec = codec;
+    auditLog('codec-change', `Đổi codec: ${codec}`, {
+      role: 'viewer',
+      details: { codec },
+    });
     return this.peer?.send(CHANNEL_SYSTEM, {
       type: 'system',
       action: 'codec',
@@ -937,6 +1009,10 @@ export class ConnectionManager {
    */
   requestMonitor(sourceId: string): boolean {
     if (this.role !== 'viewer') return false;
+    auditLog('monitor-switch', `Đổi màn hình hiển thị`, {
+      role: 'viewer',
+      details: { sourceId },
+    });
     return (
       this.peer?.send(CHANNEL_SYSTEM, {
         type: 'system',
@@ -1281,6 +1357,11 @@ export class ConnectionManager {
     const action = data?.action as string | undefined;
     const requestId = data?.requestId as string | undefined;
     if (!action) return;
+    auditLog('remote-action', `Nhận lệnh hệ thống từ đối tác: ${action}`, {
+      role: 'host',
+      details: { action },
+      severity: action === 'shutdown' || action === 'restart' || action === 'signout' ? 'warn' : 'info',
+    });
     let result: { success: boolean; error?: string } = { success: false, error: 'No system API' };
     try {
       if ((window as any).titanAPI?.system?.execute) {
@@ -1327,6 +1408,11 @@ export class ConnectionManager {
    */
   sendRemoteAction(action: string): boolean {
     if (this.role !== 'viewer') return false;
+    auditLog('remote-action', `Gửi lệnh hệ thống: ${action}`, {
+      role: 'viewer',
+      details: { action },
+      severity: action === 'shutdown' || action === 'restart' || action === 'signout' ? 'warn' : 'info',
+    });
     return (
       this.peer?.send(CHANNEL_SYSTEM, {
         type: 'system',
@@ -1357,6 +1443,10 @@ export class ConnectionManager {
         try {
           await window.titanAPI?.clipboard?.write(data.text);
           console.log('[Conn] Clipboard received from viewer, simulating paste');
+          auditLog('clipboard-sync', `Đối tác dán nội dung (${data.text.length} ký tự)`, {
+            role: 'host',
+            details: { direction: 'viewer-to-host', length: data.text.length },
+          });
           // Simulate Ctrl+V on the host
           await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'Control', code: 'ControlLeft', modifiers: ['ctrl'] });
           await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'v', code: 'KeyV', modifiers: ['ctrl'] });
@@ -1364,6 +1454,17 @@ export class ConnectionManager {
           await window.titanAPI?.input?.simulate({ type: 'key', action: 'up', key: 'Control', code: 'ControlLeft', modifiers: [] });
         } catch (err) {
           console.error('[Conn] Clipboard paste on host failed:', err);
+        }
+      } else if (data.direction === 'viewer-to-host-no-paste' && typeof data.text === 'string') {
+        // Same as above but the viewer is just syncing — no Ctrl+V follow-up.
+        try {
+          await window.titanAPI?.clipboard?.write(data.text);
+          auditLog('clipboard-sync', `Đối tác đồng bộ clipboard (${data.text.length} ký tự)`, {
+            role: 'host',
+            details: { direction: 'viewer-to-host-sync', length: data.text.length },
+          });
+        } catch (err) {
+          console.error('[Conn] Clipboard sync on host failed:', err);
         }
       } else if (data.direction === 'request-from-host') {
         // Viewer wants host clipboard → read it and send back
@@ -1377,6 +1478,10 @@ export class ConnectionManager {
               action: 'clipboard',
               data: { direction: 'host-to-viewer', text },
             });
+            auditLog('clipboard-sync', `Đối tác sao chép từ máy này (${text.length} ký tự)`, {
+              role: 'host',
+              details: { direction: 'host-to-viewer', length: text.length },
+            });
             console.log('[Conn] Clipboard sent to viewer:', text.length, 'chars');
           }
         } catch (err) {
@@ -1388,11 +1493,53 @@ export class ConnectionManager {
         // Host sent clipboard content → write to viewer's local clipboard
         try {
           await window.titanAPI?.clipboard?.write(data.text);
+          auditLog('clipboard-sync', `Sao chép từ máy đối tác (${data.text.length} ký tự)`, {
+            role: 'viewer',
+            details: { direction: 'host-to-viewer', length: data.text.length },
+          });
           console.log('[Conn] Clipboard received from host:', data.text.length, 'chars');
         } catch (err) {
           console.error('[Conn] Failed to write to local clipboard:', err);
         }
       }
+    }
+  }
+
+  /**
+   * Viewer-side: explicitly request the host's clipboard. Useful for the
+   * "Sync clipboard now" menu entry — without this, sync only happens on
+   * Ctrl+C/V/X. Returns false when the data channel isn't ready.
+   */
+  pullHostClipboard(): boolean {
+    if (this.role !== 'viewer') return false;
+    return (
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'clipboard',
+        data: { direction: 'request-from-host' },
+      }) ?? false
+    );
+  }
+
+  /**
+   * Viewer-side: push the local clipboard's current contents to the host
+   * without a paste keystroke. Useful when the user wants the host to see
+   * a snippet without triggering an immediate paste.
+   */
+  async pushClipboardToHost(): Promise<boolean> {
+    if (this.role !== 'viewer') return false;
+    try {
+      const text = await window.titanAPI?.clipboard?.read();
+      if (text == null) return false;
+      return (
+        this.peer?.send(CHANNEL_SYSTEM, {
+          type: 'system',
+          action: 'clipboard',
+          data: { direction: 'viewer-to-host-no-paste', text },
+        }) ?? false
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -1444,6 +1591,13 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
+    if (this.role) {
+      auditLog('session-end', 'Phiên kết thúc', {
+        role: this.role,
+        partnerId: this.partnerId,
+      });
+      setActiveAuditSession(null);
+    }
     // Tell the partner we're leaving on purpose. Two paths so this works
     // even if one of them is broken at the moment:
     //   1) data channel → instant, doesn't depend on the signal server

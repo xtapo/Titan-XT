@@ -254,22 +254,20 @@ export class InputHandler {
     this.peer.send(CHANNEL_INPUT, msg);
   };
 
+  // dblclick + contextmenu: only preventDefault on the viewer so the browser
+  // doesn't open its own menu / select text. We deliberately do NOT forward
+  // these to the host — the preceding mousedown/mouseup pair (or two pairs,
+  // for dblclick) already produced a real click on the host's input
+  // executor. Forwarding the synthetic `contextmenu` or `dblclick` action
+  // makes the host execute a second click immediately after, which on macOS
+  // opens then dismisses the context menu in the same frame and looks like
+  // "right-click is broken." Same root cause for mis-firing double-clicks.
   private onDblClick = (e: MouseEvent) => {
     e.preventDefault();
-    const { x, y } = this.getRelativeCoords(e);
-    this.lastX = x;
-    this.lastY = y;
-    const msg: MouseMessage = { type: 'mouse', action: 'dblclick', x, y };
-    this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
-    const { x, y } = this.getRelativeCoords(e);
-    this.lastX = x;
-    this.lastY = y;
-    const msg: MouseMessage = { type: 'mouse', action: 'contextmenu', x, y };
-    this.peer.send(CHANNEL_INPUT, msg);
   };
 
   private onWheel = (e: WheelEvent) => {
