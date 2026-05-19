@@ -48,12 +48,18 @@ const LONG_PRESS_MS = 420;
 // Double-tap to dblclick. iOS uses ~300 ms; we go a touch tighter so a slow
 // double tap doesn't accidentally fire a dblclick on the host.
 const DBL_TAP_GAP_MS = 280;
-// Pan ballistics — finger-px → screen-ratio. Keep the linear coefficient
-// small so a slow drag is precise, then ramp the quadratic term so a quick
-// flick covers more ground. Numbers tuned on a 6.1" phone with 1080p host;
-// works fine up to 4K because we cap at the screen edge.
-const PAN_LINEAR = 0.85;
-const PAN_QUADRATIC = 0.0035;
+// Pan ballistics — finger-px → screen-ratio.
+// Slow drags: ~1.6× so navigating across the host doesn't require a full
+// phone-width swipe; still precise enough to land on small UI targets
+// because each animation-frame delta is only a few px.
+// Fast flicks: extra gain proportional to *velocity* (px/ms), capped so a
+// hard flick can traverse the screen but doesn't shoot off uncontrollably.
+// PAN_QUADRATIC was multiplied by per-event delta in v1.3.0, which barely
+// ever exceeded 20 — so the curve was effectively flat. v1.3.1 uses real
+// velocity so the acceleration actually kicks in.
+const PAN_LINEAR = 1.6;
+const PAN_VELOCITY_GAIN = 3.0;   // multiplied by px/ms
+const PAN_VELOCITY_CAP = 2.5;    // max extra gain on top of linear
 // Inertia scroll — exponential decay coefficient per frame at 60 Hz.
 // 0.92 = ~50% velocity remains after 8 frames (~133 ms); feels snappy without
 // floating forever.
@@ -76,6 +82,9 @@ type Pointer = {
   startT: number;
   x: number;
   y: number;
+  /** Timestamp of the last move event for this pointer — used to derive
+   *  px/ms velocity for ballistics. */
+  lastMoveT: number;
   moved: boolean;
 };
 
@@ -364,6 +373,7 @@ export class TouchInput {
       startT: performance.now(),
       x: e.clientX,
       y: e.clientY,
+      lastMoveT: performance.now(),
       moved: false,
     });
 
@@ -383,10 +393,13 @@ export class TouchInput {
   private onPointerMove = (e: PointerEvent) => {
     const p = this.pointers.get(e.pointerId);
     if (!p) return;
+    const now = performance.now();
+    const dt = Math.max(1, now - p.lastMoveT);
     const dx = e.clientX - p.x;
     const dy = e.clientY - p.y;
     p.x = e.clientX;
     p.y = e.clientY;
+    p.lastMoveT = now;
     if (!p.moved && Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > TAP_SLOP_PX) {
       p.moved = true;
     }
@@ -398,7 +411,7 @@ export class TouchInput {
         this.clearLongPress();
       }
       if (this.state === 'PAN' || this.state === 'DRAGGING') {
-        this.applyPanDelta(dx, dy);
+        this.applyPanDelta(dx, dy, dt);
       }
       return;
     }
@@ -527,11 +540,12 @@ export class TouchInput {
   // === Pan with ballistics ===
 
   /**
-   * Convert finger pixels into cursor-ratio delta. Linear at slow speeds for
-   * pixel-precise targeting, quadratic at high speeds so a quick flick
-   * traverses the whole screen — the same shape OS pointer acceleration uses.
+   * Convert finger pixels into cursor-ratio delta. Linear gain handles slow
+   * precise drags; an extra term proportional to *velocity* (px/ms) lets a
+   * fast flick cover much more ground. The cap keeps a hard flick from
+   * teleporting the cursor unpredictably.
    */
-  private applyPanDelta(rawDx: number, rawDy: number) {
+  private applyPanDelta(rawDx: number, rawDy: number, dtMs: number) {
     // Use offsetWidth/Height — those are the *unrotated* (local) element
     // dimensions. getBoundingClientRect on a rotated element returns the
     // axis-aligned bounding box, which has width/height swapped after a 90°
@@ -544,8 +558,9 @@ export class TouchInput {
     // rightward swipe always moves the cursor right *as displayed*.
     const { dx, dy } = this.rotateDelta(rawDx, rawDy);
 
-    const speed = Math.hypot(dx, dy);
-    const accel = PAN_LINEAR + PAN_QUADRATIC * speed;
+    const distance = Math.hypot(dx, dy);
+    const velocity = distance / Math.max(1, dtMs); // px/ms
+    const accel = PAN_LINEAR + Math.min(PAN_VELOCITY_CAP, PAN_VELOCITY_GAIN * velocity);
     this.cursorX = clamp01(this.cursorX + (dx * accel) / localW);
     this.cursorY = clamp01(this.cursorY + (dy * accel) / localH);
     this.scheduleMove();
