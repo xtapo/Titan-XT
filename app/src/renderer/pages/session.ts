@@ -143,25 +143,50 @@ export function renderSessionPage() {
               </div>
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Chất lượng</div>
-              <button class="dropdown-item" data-quality="auto">Tự động (theo mạng)</button>
+              <button class="dropdown-item dropdown-item-toggle" data-quality="auto">
+                <span class="dropdown-item-label">Tự động (theo mạng)</span>
+                <span class="dropdown-item-check" data-quality-check="auto">✓</span>
+              </button>
               ${(Object.keys(QUALITY_PROFILES) as QualityPreset[])
-                .map((k) => `<button class="dropdown-item" data-quality="${k}">${QUALITY_PROFILES[k].label}</button>`)
+                .map((k) => `<button class="dropdown-item dropdown-item-toggle" data-quality="${k}">
+                  <span class="dropdown-item-label">${QUALITY_PROFILES[k].label}</span>
+                  <span class="dropdown-item-check hidden" data-quality-check="${k}">✓</span>
+                </button>`)
                 .join('')}
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Codec video</div>
               ${(['h264', 'h265'] as VideoCodec[])
                 .map((c) => {
                   const supported = ConnectionManager.codecSupported(c);
-                  const cls = supported ? 'dropdown-item' : 'dropdown-item dropdown-item-disabled';
+                  const cls = supported
+                    ? 'dropdown-item dropdown-item-toggle'
+                    : 'dropdown-item dropdown-item-toggle dropdown-item-disabled';
                   const note = supported ? '' : ' (không hỗ trợ)';
-                  return `<button class="${cls}" data-codec="${c}"${supported ? '' : ' disabled'}>${CODEC_LABELS[c]}${note}</button>`;
+                  // The dropdown-item-check span is rendered for every codec
+                  // so updateCodecMenu() can flip the `hidden` class without
+                  // rebuilding the markup. The default codec gets the check
+                  // shown on first paint; the switch happens after handshake.
+                  const checkHidden = c === 'h264' ? '' : 'hidden';
+                  return `<button class="${cls}" data-codec="${c}"${supported ? '' : ' disabled'}>
+                    <span class="dropdown-item-label">${CODEC_LABELS[c]}${note}</span>
+                    <span class="dropdown-item-check ${checkHidden}" data-codec-check="${c}">✓</span>
+                  </button>`;
                 })
                 .join('')}
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Hiển thị</div>
-              <button class="dropdown-item" data-fit="contain">Vừa khung</button>
-              <button class="dropdown-item" data-fit="cover">Lấp đầy (cắt)</button>
-              <button class="dropdown-item" data-fit="fill">Kéo dãn</button>
+              <button class="dropdown-item dropdown-item-toggle" data-fit="contain">
+                <span class="dropdown-item-label">Vừa khung</span>
+                <span class="dropdown-item-check" data-fit-check="contain">✓</span>
+              </button>
+              <button class="dropdown-item dropdown-item-toggle" data-fit="cover">
+                <span class="dropdown-item-label">Lấp đầy (cắt)</span>
+                <span class="dropdown-item-check hidden" data-fit-check="cover">✓</span>
+              </button>
+              <button class="dropdown-item dropdown-item-toggle" data-fit="fill">
+                <span class="dropdown-item-label">Kéo dãn</span>
+                <span class="dropdown-item-check hidden" data-fit-check="fill">✓</span>
+              </button>
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Âm thanh</div>
               <button class="dropdown-item dropdown-item-toggle" data-audio="toggle" id="menu-audio-toggle">
@@ -373,12 +398,14 @@ function setupSessionEvents() {
       // tiers based on observed network conditions instead of the user's
       // last manual pick.
       window.connectionManager?.setAdaptiveEnabled?.(true);
+      refreshQualityUI();
       showToast('Đã bật chất lượng tự động', 'success');
     } else if (quality) {
       const ok = window.connectionManager?.requestQuality(quality);
       if (ok === false) {
         showToast('Chưa kết nối — chưa thể đổi chất lượng', 'info');
       } else {
+        refreshQualityUI();
         showToast(`Đã yêu cầu chất lượng: ${QUALITY_PROFILES[quality].label}`, 'success');
       }
     } else if (codec) {
@@ -390,11 +417,13 @@ function setupSessionEvents() {
       if (ok === false) {
         showToast('Chưa kết nối — chưa thể đổi codec', 'info');
       } else {
+        refreshCodecUI(codec);
         showToast(`Đã yêu cầu chuyển sang ${CODEC_LABELS[codec]}`, 'success');
       }
     } else if (fit) {
       const video = document.getElementById('remote-video') as HTMLVideoElement | null;
       if (video) video.style.objectFit = fit;
+      refreshFitUI(fit);
     }
   });
 
@@ -650,6 +679,15 @@ function setupGroupDropdown(rootId: string, triggerId: string, menuId: string) {
     // as a safety-net for any initial request that was lost on the wire.
     if (willOpen && menuId === 'menu-view') {
       window.connectionManager?.requestMonitorList?.();
+      // Re-sync all the toggle check marks so they reflect any state that
+      // changed while the menu was closed (adaptive auto-downgrade, codec
+      // renegotiation completing, etc).
+      refreshQualityUI();
+      const codec = window.connectionManager?.codec ?? 'h264';
+      refreshCodecUI(codec);
+      const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+      const fit = (video?.style.objectFit as DisplayFit) || 'contain';
+      refreshFitUI(fit);
     }
   });
 
@@ -905,6 +943,44 @@ function refreshViewerModeUI(mode: 'control' | 'view'): void {
       !!window.connectionManager?.isControlLockedRemotely,
     );
   }
+}
+
+/**
+ * Sync the View menu's codec toggle with the current state. The host
+ * confirms the switch by a renegotiation; once the new offer is accepted
+ * we move the check mark. Until then we already paint it on the picked
+ * codec optimistically — the user has to *see* something change, otherwise
+ * the menu feels broken.
+ */
+export function refreshCodecUI(codec: 'h264' | 'h265'): void {
+  document.querySelectorAll<HTMLElement>('[data-codec-check]').forEach((el) => {
+    el.classList.toggle('hidden', el.dataset.codecCheck !== codec);
+  });
+}
+
+/**
+ * Sync the View menu's quality toggle. "Auto" is checked when the adaptive
+ * controller owns the preset; otherwise the user-pinned tier wins.
+ */
+export function refreshQualityUI(): void {
+  const conn = window.connectionManager;
+  const adaptive = conn?.isAdaptive ?? false;
+  const current = conn?.quality;
+  document.querySelectorAll<HTMLElement>('[data-quality-check]').forEach((el) => {
+    const target = el.dataset.qualityCheck;
+    const match = adaptive ? target === 'auto' : target === current;
+    el.classList.toggle('hidden', !match);
+  });
+}
+
+/**
+ * Sync the display-fit toggle (contain/cover/fill). Reads the current
+ * objectFit off the video element so the check survives a menu rebuild.
+ */
+export function refreshFitUI(fit: DisplayFit): void {
+  document.querySelectorAll<HTMLElement>('[data-fit-check]').forEach((el) => {
+    el.classList.toggle('hidden', el.dataset.fitCheck !== fit);
+  });
 }
 
 /**
