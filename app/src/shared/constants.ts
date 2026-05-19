@@ -4,7 +4,7 @@ export const APP_NAME = 'Titan-XT';
 export const APP_VERSION = '1.0.0';
 
 // Signal server
-export const DEFAULT_SIGNAL_SERVER = 'http://152.67.122.105:3456';
+export const DEFAULT_SIGNAL_SERVER = 'https://titan.xtapo.org';
 
 // WebRTC ICE servers (typed as any[] for Node.js compat — used in renderer)
 export const ICE_SERVERS: any[] = [

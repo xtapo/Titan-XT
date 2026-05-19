@@ -275,10 +275,31 @@ export class InputHandler {
     const { x, y } = this.getRelativeCoords(e);
     this.lastX = x;
     this.lastY = y;
+    // Normalize browser wheel deltas to host "scroll ticks". Earlier we shipped
+    // a hard-coded ±3 per event which made fast wheel flicks feel as slow as
+    // slow ones — magnitude was thrown away by Math.sign(). Browsers report
+    // deltaMode = 0 (pixels, ~100 per notch on Windows / fine-grained on
+    // trackpads), 1 (lines, ~3 per notch on Firefox/Linux), or 2 (pages).
+    // We translate to "lines" since nut.js' scroll units map to wheel notches
+    // on Windows / lines on Linux / discrete steps on macOS.
+    const toTicks = (v: number): number => {
+      if (e.deltaMode === 1) return v;        // already in lines
+      if (e.deltaMode === 2) return v * 10;   // pages → many lines
+      return v / 33;                          // pixels → lines (≈100/3 px per notch)
+    };
+    // Preserve a 1-tick floor in the direction of motion so a tiny trackpad
+    // nudge still scrolls something on the host instead of rounding to zero.
+    const quantize = (raw: number): number => {
+      const t = Math.round(toTicks(raw));
+      if (t !== 0) return Math.max(-30, Math.min(30, t));
+      if (raw > 0) return 1;
+      if (raw < 0) return -1;
+      return 0;
+    };
     const msg: MouseMessage = {
       type: 'mouse', action: 'scroll', x, y,
-      deltaX: Math.sign(e.deltaX) * 3,
-      deltaY: Math.sign(e.deltaY) * 3,
+      deltaX: quantize(e.deltaX),
+      deltaY: quantize(e.deltaY),
     };
     this.peer.send(CHANNEL_INPUT, msg);
   };

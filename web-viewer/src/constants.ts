@@ -7,7 +7,7 @@
  */
 
 export const SIGNAL_SERVER =
-  (import.meta.env.VITE_SIGNAL_SERVER as string | undefined) || 'http://152.67.122.105:3456';
+  (import.meta.env.VITE_SIGNAL_SERVER as string | undefined) || 'https://titan.xtapo.org';
 
 // WebRTC ICE servers — same set as the desktop app.
 export const ICE_SERVERS: RTCIceServer[] = [

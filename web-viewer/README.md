@@ -46,7 +46,7 @@ npm run build
 
 - Phải serve qua **HTTPS** (WebRTC + service worker bắt buộc).
 - Headers `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` không cần thiết — viewer chỉ nhận stream, không capture.
-- Signal server (`SIGNAL_SERVER` mặc định `http://152.67.122.105:3456`) cần CORS cho phép origin của trang.
+- Signal server (`SIGNAL_SERVER` mặc định `https://titan.xtapo.org`) cần CORS cho phép origin của trang.
 
 ### Nginx ví dụ
 

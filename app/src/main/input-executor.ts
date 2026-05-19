@@ -161,9 +161,15 @@ export async function executeMouse(
       await nutMouse.rightClick();
       break;
     case 'scroll':
+      // Vertical: positive deltaY = scroll content down (wheel rolls toward
+      // user). Horizontal: positive deltaX = scroll right.
       if (msg.deltaY) {
         if (msg.deltaY > 0) await nutMouse.scrollDown(Math.abs(msg.deltaY));
         else await nutMouse.scrollUp(Math.abs(msg.deltaY));
+      }
+      if (msg.deltaX) {
+        if (msg.deltaX > 0) await nutMouse.scrollRight(Math.abs(msg.deltaX));
+        else await nutMouse.scrollLeft(Math.abs(msg.deltaX));
       }
       break;
   }
