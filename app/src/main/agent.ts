@@ -28,6 +28,10 @@ app.commandLine.appendSwitch('enable-features', [
   'WebRtcAllowH265Receive',
   'PlatformHEVCEncoderSupport',
   'PlatformHEVCDecoderSupport',
+  // Windows Graphics Capture (WGC) backend for screen capture — replaces
+  // legacy GDI BitBlt with the same API OBS/Game Bar use. Delivers 60fps+
+  // capture on Windows 10 2004+ instead of the 25-30fps GDI ceiling.
+  'WebRtcAllowWgcScreenCapturer',
 ].join(','));
 
 let mainWindow: BrowserWindow | null = null;

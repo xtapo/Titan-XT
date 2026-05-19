@@ -651,7 +651,17 @@ export class ConnectionManager {
     }
 
     const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const CHUNK_SIZE = 64 * 1024; // 64 KB raw → ~88 KB base64, well under typical 256 KB SCTP limit
+    // CHUNK_SIZE MUST be a multiple of 3. Reason: each chunk is encoded to
+    // base64 independently before transit. Base64 only emits `=` padding
+    // when the input length isn't a multiple of 3. The receiver concatenates
+    // every chunk's base64 then decodes once via `Buffer.from(s, 'base64')`
+    // — and Node's base64 decoder stops at the first `=` it sees. So if any
+    // non-final chunk had padding (e.g. 64*1024=65536 → 65536%3=1 → ends in
+    // "=="), the decoder silently truncates the file to whatever came before
+    // the first `==`, producing a "successful" save with missing data.
+    // 64512 = 63 KB, 64512/3 = 21504 → no padding except possibly on the
+    // very last chunk, which is safe at the end of the concatenated string.
+    const CHUNK_SIZE = 64512;
     const totalChunks = Math.max(1, Math.ceil(fileSize / CHUNK_SIZE));
 
     // Surface in UI immediately so the sender sees feedback even on tiny files.
