@@ -110,6 +110,20 @@ export interface AppSettings {
    * but does not erase existing logs.
    */
   auditEnabled: boolean;
+  /**
+   * Two-way clipboard sync. When on, both peers watch their local clipboard
+   * and push changes to the partner over the system data channel — copying
+   * on one side makes the text/image appear on the other without an explicit
+   * Ctrl+V or menu action. Off by default for privacy: a casual support
+   * session shouldn't leak whatever the user happened to have copied.
+   */
+  clipboardSyncEnabled: boolean;
+  /**
+   * When clipboard sync is on, also forward image clipboards (PNG-encoded).
+   * Separate flag because image payloads are much larger than text and the
+   * user may want text-only sync on metered links.
+   */
+  clipboardSyncImages: boolean;
 }
 
 export interface SessionState {

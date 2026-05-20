@@ -66,11 +66,24 @@ contextBridge.exposeInMainWorld('titanAPI', {
   clipboard: {
     read: () => ipcRenderer.invoke('clipboard:read') as Promise<string>,
     write: (text: string) => ipcRenderer.invoke('clipboard:write', text),
+    readImagePng: () =>
+      ipcRenderer.invoke('clipboard:readImagePng') as Promise<string | null>,
+    writeImagePng: (base64: string) =>
+      ipcRenderer.invoke('clipboard:writeImagePng', base64) as Promise<boolean>,
+    fingerprint: () =>
+      ipcRenderer.invoke('clipboard:fingerprint') as Promise<{
+        hasText: boolean;
+        hasImage: boolean;
+        textHash: string | null;
+        imageHash: string | null;
+      }>,
   },
 
   // === File ===
   file: {
     selectFiles: () => ipcRenderer.invoke('file:selectFiles'),
+    prepareFileOrFolder: (filePath: string) =>
+      ipcRenderer.invoke('file:prepareFileOrFolder', filePath) as Promise<{ path: string; name: string; size: number; type: string; isZip: boolean } | null>,
     readChunk: (filePath: string, offset: number, chunkSize: number) =>
       ipcRenderer.invoke('file:readChunk', filePath, offset, chunkSize) as Promise<string | null>,
     saveFile: (fileName: string, base64Data: string, targetHint?: 'desktop') =>

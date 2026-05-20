@@ -24,11 +24,52 @@ function resolveSaveDir(): string {
  * FileTransfer — Handles file selection and saving for transfer
  */
 export function setupFileTransfer(): void {
+  // Prepare file or folder for transfer (zips folders on the fly)
+  ipcMain.handle('file:prepareFileOrFolder', async (_event, filePath: string) => {
+    try {
+      if (!fs.existsSync(filePath)) {
+        return null;
+      }
+      const stats = fs.statSync(filePath);
+      if (stats.isDirectory()) {
+        const folderName = path.basename(filePath);
+        const zipName = `${folderName}.zip`;
+        const tempDir = app.getPath('temp');
+        const tempZipPath = path.join(tempDir, `titan-transfer-${Date.now()}-${zipName}`);
+
+        const AdmZip = require('adm-zip');
+        const zip = new AdmZip();
+        zip.addLocalFolder(filePath);
+        zip.writeZip(tempZipPath);
+
+        const zipStats = fs.statSync(tempZipPath);
+        return {
+          path: tempZipPath,
+          name: zipName,
+          size: zipStats.size,
+          type: 'zip',
+          isZip: true,
+        };
+      } else {
+        return {
+          path: filePath,
+          name: path.basename(filePath),
+          size: stats.size,
+          type: path.extname(filePath).substring(1),
+          isZip: false,
+        };
+      }
+    } catch (err: any) {
+      console.error('[File] Prepare error:', err);
+      return null;
+    }
+  });
+
   // Select files to send
   ipcMain.handle('file:selectFiles', async () => {
     const result = await dialog.showOpenDialog({
-      properties: ['openFile', 'multiSelections'],
-      title: 'Chọn file để gửi',
+      properties: ['openFile', 'openDirectory', 'multiSelections'],
+      title: 'Chọn file hoặc thư mục để gửi',
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -37,11 +78,12 @@ export function setupFileTransfer(): void {
 
     return result.filePaths.map((filePath) => {
       const stats = fs.statSync(filePath);
+      const isDir = stats.isDirectory();
       return {
         path: filePath,
         name: path.basename(filePath),
-        size: stats.size,
-        type: path.extname(filePath).substring(1),
+        size: isDir ? 0 : stats.size,
+        type: isDir ? 'folder' : path.extname(filePath).substring(1),
       };
     });
   });

@@ -218,6 +218,14 @@ export function renderSessionPage() {
               <button class="dropdown-item" data-metrics="toggle">Bật/tắt bảng đồng hồ đo</button>
               <div class="dropdown-divider"></div>
               <div class="dropdown-section-label">Clipboard</div>
+              <button class="dropdown-item dropdown-item-toggle" data-clipboard="toggle" id="menu-clipboard-toggle">
+                <span class="dropdown-item-label">Tự động đồng bộ clipboard</span>
+                <span class="dropdown-item-check hidden" data-clipboard-check>✓</span>
+              </button>
+              <button class="dropdown-item dropdown-item-toggle" data-clipboard="toggle-images" id="menu-clipboard-images-toggle">
+                <span class="dropdown-item-label">Đồng bộ cả ảnh trong clipboard</span>
+                <span class="dropdown-item-check hidden" data-clipboard-images-check>✓</span>
+              </button>
               <button class="dropdown-item" data-clipboard="pull">Lấy clipboard từ máy đối tác</button>
               <button class="dropdown-item" data-clipboard="push">Đẩy clipboard sang máy đối tác</button>
             </div>
@@ -410,16 +418,30 @@ function setupSessionEvents() {
     } else if (item.dataset.clipboard === 'pull') {
       const ok = window.connectionManager?.pullHostClipboard();
       showToast(
-        ok ? 'Đã yêu cầu clipboard từ máy đối tác' : 'Chưa kết nối',
+        ok ? 'Đã yêu cầu clipboard từ máy đối tác' : (window.connectionManager?.isClipboardSyncEnabled === false ? 'Hãy bật đồng bộ clipboard trước' : 'Chưa kết nối'),
         ok ? 'success' : 'info',
       );
     } else if (item.dataset.clipboard === 'push') {
       window.connectionManager?.pushClipboardToHost?.().then((ok) => {
         showToast(
-          ok ? 'Đã gửi clipboard sang máy đối tác' : 'Không có nội dung clipboard',
+          ok ? 'Đã gửi clipboard sang máy đối tác' : (window.connectionManager?.isClipboardSyncEnabled === false ? 'Hãy bật đồng bộ clipboard trước' : 'Không có nội dung clipboard'),
           ok ? 'success' : 'info',
         );
       });
+    } else if (item.dataset.clipboard === 'toggle') {
+      const cm = window.connectionManager;
+      if (!cm) return;
+      const next = !cm.isClipboardSyncEnabled;
+      cm.setClipboardSync({ enabled: next });
+      updateClipboardToggleUI();
+      showToast(next ? 'Đã bật đồng bộ clipboard' : 'Đã tắt đồng bộ clipboard', next ? 'success' : 'info');
+    } else if (item.dataset.clipboard === 'toggle-images') {
+      const cm = window.connectionManager;
+      if (!cm) return;
+      const next = !cm.isClipboardSyncImagesEnabled;
+      cm.setClipboardSync({ images: next });
+      updateClipboardToggleUI();
+      showToast(next ? 'Đã bật đồng bộ ảnh clipboard' : 'Đã tắt đồng bộ ảnh clipboard', next ? 'success' : 'info');
     } else if (view === 'fullscreen') {
       const wrapper = document.getElementById('video-wrapper');
       if (wrapper) {
@@ -515,6 +537,26 @@ function setupSessionEvents() {
     if (e.key === 'Enter') sendChat();
   });
 
+/**
+ * Helper to zip a directory if needed and enqueue it for sending.
+ */
+async function handleSendFileOrFolder(filePath: string, targetHint?: 'desktop'): Promise<void> {
+  try {
+    if (window.titanAPI?.file?.prepareFileOrFolder) {
+      const f = await window.titanAPI.file.prepareFileOrFolder(filePath);
+      if (f) {
+        await window.connectionManager?.sendFile(f.path, f.name, f.size, targetHint);
+      }
+    } else {
+      const name = filePath.split(/[\\/]/).pop() || 'file';
+      await window.connectionManager?.sendFile(filePath, name, 0, targetHint);
+    }
+  } catch (err) {
+    console.error('[Session] send error:', err);
+    showToast('Không thể gửi mục này', 'error');
+  }
+}
+
   // File select
   document.getElementById('btn-select-files')?.addEventListener('click', async () => {
     try {
@@ -522,7 +564,7 @@ function setupSessionEvents() {
         const files = await window.titanAPI.file.selectFiles();
         if (files && files.length > 0) {
           for (const f of files) {
-            await window.connectionManager?.sendFile(f.path, f.name, f.size);
+            await handleSendFileOrFolder(f.path);
           }
         }
       }
@@ -546,15 +588,13 @@ function setupSessionEvents() {
       dropZone.classList.remove('drag-over');
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
-      // Drag-and-drop in Electron exposes the absolute path on File via
-      // (file as any).path, which is what file:readChunk expects.
       for (const f of Array.from(files)) {
         const filePath = (f as any).path as string | undefined;
         if (!filePath) {
           showToast('Không lấy được đường dẫn file — hãy dùng nút Chọn file', 'error');
           continue;
         }
-        await window.connectionManager?.sendFile(filePath, f.name, f.size);
+        await handleSendFileOrFolder(filePath);
       }
     });
   }
@@ -661,11 +701,10 @@ function setupVideoDropZone(): void {
         showToast('Không lấy được đường dẫn file — hãy dùng nút Chọn file', 'error');
         continue;
       }
-      // Surface the file panel so the user can watch progress.
       openFilePanel();
-      await window.connectionManager.sendFile(filePath, f.name, f.size, 'desktop');
+      await handleSendFileOrFolder(filePath, 'desktop');
     }
-    showToast('Đang gửi file tới Desktop của host...', 'info');
+    showToast('Đang gửi tới Desktop của host...', 'info');
   });
 }
 
@@ -731,6 +770,7 @@ function setupGroupDropdown(rootId: string, triggerId: string, menuId: string) {
       const video = document.getElementById('remote-video') as HTMLVideoElement | null;
       const fit = (video?.style.objectFit as DisplayFit) || 'contain';
       refreshFitUI(fit);
+      updateClipboardToggleUI();
     }
   });
 
@@ -1056,6 +1096,19 @@ let wallpaperHiddenOnHost = false;
 export function resetWallpaperToggleUI(): void {
   wallpaperHiddenOnHost = false;
   document.querySelector('[data-wallpaper-check]')?.classList.add('hidden');
+}
+
+/**
+ * Reflect the current ConnectionManager clipboard-sync state into the
+ * Clipboard sub-menu's two toggles. Called whenever the user flips a switch
+ * and right after a session begins so the menu matches the persisted prefs.
+ */
+export function updateClipboardToggleUI(): void {
+  const cm = window.connectionManager;
+  const enabled = !!cm?.isClipboardSyncEnabled;
+  const images = !!cm?.isClipboardSyncImagesEnabled;
+  document.querySelector('[data-clipboard-check]')?.classList.toggle('hidden', !enabled);
+  document.querySelector('[data-clipboard-images-check]')?.classList.toggle('hidden', !images);
 }
 
 /**
@@ -1519,9 +1572,9 @@ function setupHostPanelDropZone(): void {
         showToast('Không lấy được đường dẫn file', 'error');
         continue;
       }
-      await window.connectionManager.sendFile(filePath, f.name, f.size, 'desktop');
+      await handleSendFileOrFolder(filePath, 'desktop');
     }
-    showToast('Đang gửi file tới Desktop của khách...', 'info');
+    showToast('Đang gửi tới Desktop của khách...', 'info');
   });
 }
 
@@ -1736,12 +1789,27 @@ export function updateFileProgress(
   percent: number,
   status: 'sending' | 'receiving' | 'complete' | 'error',
   savedPath?: string,
+  speed?: string,
+  eta?: string,
 ): void {
   const labelMap: Record<string, string> = {
     sending: 'Đang gửi',
     receiving: 'Đang nhận',
     complete: isHostMode ? 'File Received' : 'Hoàn thành',
     error: 'Lỗi',
+  };
+
+  const getDetailText = (): string => {
+    let text = labelMap[status] || status;
+    if ((status === 'sending' || status === 'receiving') && (speed || eta)) {
+      const parts: string[] = [];
+      if (speed) parts.push(speed);
+      if (eta) parts.push(eta);
+      if (parts.length > 0) {
+        text = `${text} (${parts.join(', ')})`;
+      }
+    }
+    return text;
   };
 
   if (isHostMode) {
@@ -1754,7 +1822,7 @@ export function updateFileProgress(
     if (sizeEl) {
       const original = sizeEl.textContent || '';
       const sizePrefix = original.split('—')[0]?.trim() || '';
-      sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
+      sizeEl.textContent = `${sizePrefix} — ${getDetailText()}`;
     }
     if (status === 'complete' && savedPath) {
       renderFileRowActions(row.querySelector('[data-actions]') as HTMLElement | null, savedPath);
@@ -1772,7 +1840,7 @@ export function updateFileProgress(
   if (sizeEl) {
     const original = sizeEl.textContent || '';
     const sizePrefix = original.split('—')[0]?.trim() || '';
-    sizeEl.textContent = `${sizePrefix} — ${labelMap[status] || status}`;
+    sizeEl.textContent = `${sizePrefix} — ${getDetailText()}`;
   }
   if (status === 'complete' && savedPath) {
     renderFileRowActions(row.querySelector('[data-actions]') as HTMLElement | null, savedPath);

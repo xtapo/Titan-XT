@@ -552,6 +552,27 @@ async function openSettingsModal() {
             </div>
           </div>
           <div class="settings-section">
+            <h3>Đồng bộ clipboard hai chiều</h3>
+            <p class="field-hint" style="margin-top:-4px;margin-bottom:12px">
+              Cho phép sao chép văn bản (và tuỳ chọn cả ảnh) qua lại giữa máy bạn và
+              máy đối tác trong phiên kết nối. Mặc định tắt vì lý do bảo mật — chỉ
+              bật khi bạn chủ động muốn chia sẻ nội dung clipboard.
+            </p>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-clipboard-sync-enabled" />
+                <span>Bật đồng bộ clipboard cho phiên mới</span>
+              </label>
+            </div>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-clipboard-sync-images" />
+                <span>Đồng bộ cả ảnh trong clipboard (giới hạn ~3 MB)</span>
+              </label>
+              <p class="field-hint">Văn bản giới hạn ~1 MB, ảnh giới hạn ~3 MB để tránh chiếm băng thông phiên.</p>
+            </div>
+          </div>
+          <div class="settings-section">
             <h3>Nhật ký kiểm toán</h3>
             <p class="field-hint" style="margin-top:-4px;margin-bottom:12px">
               Ghi lại mọi sự kiện trong phiên hỗ trợ (đăng nhập, đổi chất lượng, gửi/nhận file,
@@ -634,6 +655,8 @@ async function openSettingsModal() {
       const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
       const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
       const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+      const clipSyncInput = document.getElementById('settings-clipboard-sync-enabled') as HTMLInputElement;
+      const clipImgInput = document.getElementById('settings-clipboard-sync-images') as HTMLInputElement;
       const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
       const unPassword = document.getElementById('settings-unattended-password') as HTMLInputElement;
       const unAutoStart = document.getElementById('settings-unattended-autostart') as HTMLInputElement;
@@ -643,6 +666,8 @@ async function openSettingsModal() {
           downloadFolder: folderInput?.value || '',
           askBeforeSave: !!askInput?.checked,
           hideWallpaper: !!hideWpInput?.checked,
+          clipboardSyncEnabled: !!clipSyncInput?.checked,
+          clipboardSyncImages: !!clipImgInput?.checked,
           unattendedAutoStart: !!unAutoStart?.checked,
         });
 
@@ -725,6 +750,8 @@ async function openSettingsModal() {
     const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
     const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
     const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+    const clipSyncInput = document.getElementById('settings-clipboard-sync-enabled') as HTMLInputElement;
+    const clipImgInput = document.getElementById('settings-clipboard-sync-images') as HTMLInputElement;
     const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
     const unAutoStart = document.getElementById('settings-unattended-autostart') as HTMLInputElement;
     const unStatus = document.getElementById('settings-unattended-status');
@@ -732,6 +759,8 @@ async function openSettingsModal() {
     if (folderInput) folderInput.value = settings?.downloadFolder || '';
     if (askInput) askInput.checked = !!settings?.askBeforeSave;
     if (hideWpInput) hideWpInput.checked = !!settings?.hideWallpaper;
+    if (clipSyncInput) clipSyncInput.checked = !!settings?.clipboardSyncEnabled;
+    if (clipImgInput) clipImgInput.checked = !!settings?.clipboardSyncImages;
 
     // Reflect unattended state. The auto-launch checkbox follows the OS hook
     // so users see the truth even if another tool toggled the Run key — we

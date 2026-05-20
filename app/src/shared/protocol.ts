@@ -54,6 +54,7 @@ export interface FileResponseMessage {
   type: 'file';
   action: 'accept' | 'reject';
   fileId: string;
+  chunkIndex?: number; // Chunk index to resume from (optional, defaults to 0)
 }
 
 export interface FileChunkMessage {
@@ -138,6 +139,32 @@ export type RemoteActionId =
   | 'task-manager'
   | 'hide-wallpaper'
   | 'restore-wallpaper';
+
+/**
+ * Clipboard sync payload caps. Enforced by both ends before send and again
+ * on receive — the data channel can carry larger payloads, but bigger
+ * clipboards (multi-megabyte image dumps, accidentally-copied log files)
+ * burn bandwidth and stall higher-priority traffic.
+ */
+export const CLIPBOARD_TEXT_MAX_BYTES = 1_000_000;     // ~1 MB of UTF-8 text
+export const CLIPBOARD_IMAGE_MAX_BYTES = 4_000_000;    // ~4 MB PNG (decoded base64)
+
+export type ClipboardDirection =
+  | 'viewer-to-host'        // viewer pasted; host should write + simulate Ctrl+V
+  | 'viewer-to-host-no-paste' // sync only, no paste keystroke
+  | 'host-to-viewer'        // host pushed its clipboard back
+  | 'request-from-host';    // viewer asks host to read+send its clipboard
+
+export interface ClipboardSystemPayload {
+  direction: ClipboardDirection;
+  /** UTF-8 text content. Empty string is valid; missing means image-only. */
+  text?: string;
+  /**
+   * Image content as base64-encoded PNG. Only set when both peers have image
+   * sync enabled and the source clipboard actually held an image.
+   */
+  imagePng?: string;
+}
 
 export interface SystemMessage {
   type: 'system';

@@ -20,6 +20,8 @@ const defaultSettings: AppSettings = {
   unattendedPasswordSalt: '',
   unattendedAutoStart: false,
   auditEnabled: true,
+  clipboardSyncEnabled: false,
+  clipboardSyncImages: false,
 };
 
 /**

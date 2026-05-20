@@ -333,6 +333,67 @@ function setupIPC(): void {
   ipcMain.handle('clipboard:read', () => clipboard.readText());
   ipcMain.handle('clipboard:write', (_event, text: string) => clipboard.writeText(text));
 
+  // Image clipboard — used by two-way sync when both peers have image
+  // forwarding enabled. PNG round-trips losslessly; we hand the renderer a
+  // base64 string so it can ride the same JSON system-channel protocol as
+  // text. Returns null when the OS clipboard isn't holding an image.
+  ipcMain.handle('clipboard:readImagePng', () => {
+    try {
+      const img = clipboard.readImage();
+      if (!img || img.isEmpty()) return null;
+      const buf = img.toPNG();
+      if (!buf || buf.length === 0) return null;
+      return buf.toString('base64');
+    } catch {
+      return null;
+    }
+  });
+  ipcMain.handle('clipboard:writeImagePng', (_event, base64: string) => {
+    try {
+      if (typeof base64 !== 'string' || base64.length === 0) return false;
+      const buf = Buffer.from(base64, 'base64');
+      const img = nativeImage.createFromBuffer(buf);
+      if (!img || img.isEmpty()) return false;
+      clipboard.writeImage(img);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  // Cheap fingerprint of the current clipboard. Lets the renderer poll
+  // without re-reading the (potentially large) full payload every tick —
+  // it only fetches text/image when the fingerprint changes.
+  ipcMain.handle('clipboard:fingerprint', () => {
+    try {
+      const formats = clipboard.availableFormats() || [];
+      const hasImage = formats.some((f) => f.startsWith('image/'));
+      const hasText = formats.includes('text/plain');
+      let textHash: string | null = null;
+      if (hasText) {
+        const t = clipboard.readText();
+        // FNV-1a 32-bit — fast, good enough to detect "did this change",
+        // and avoids streaming megabytes of text across IPC each poll.
+        let h = 0x811c9dc5;
+        for (let i = 0; i < t.length; i++) {
+          h ^= t.charCodeAt(i);
+          h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+        }
+        textHash = `t:${t.length}:${h.toString(16)}`;
+      }
+      let imageHash: string | null = null;
+      if (hasImage) {
+        const img = clipboard.readImage();
+        if (img && !img.isEmpty()) {
+          const size = img.getSize();
+          imageHash = `i:${size.width}x${size.height}`;
+        }
+      }
+      return { hasText, hasImage, textHash, imageHash };
+    } catch {
+      return { hasText: false, hasImage: false, textHash: null, imageHash: null };
+    }
+  });
+
   // Trusted opener for outbound URLs (release page, docs, etc.). Renderers
   // call window.titanAPI.openExternal(url) — we whitelist the scheme so a
   // compromised renderer can't shell out to file:// or javascript:.

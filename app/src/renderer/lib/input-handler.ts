@@ -18,7 +18,7 @@
  */
 
 import { CHANNEL_INPUT, CHANNEL_SYSTEM } from '../../shared/constants';
-import { MouseMessage, KeyMessage } from '../../shared/protocol';
+import { MouseMessage, KeyMessage, CLIPBOARD_TEXT_MAX_BYTES, CLIPBOARD_IMAGE_MAX_BYTES } from '../../shared/protocol';
 import { PeerConnection } from './webrtc';
 
 export class InputHandler {
@@ -409,14 +409,45 @@ export class InputHandler {
 
   /**
    * Viewer presses Ctrl+V:
-   * 1. Read viewer's local clipboard
-   * 2. Send clipboard text to host via system channel
-   * 3. Host will write to its clipboard then simulate Ctrl+V
+   * 1. Read viewer's local clipboard (image first if enabled, then text)
+   * 2. Send to host via system channel
+   * 3. Host writes to its clipboard, then simulates Ctrl+V
+   *
+   * Gated by the connection's clipboard-sync flag — when sync is off, we
+   * still let the literal Ctrl+V keystroke flow through the input channel
+   * so the host pastes whatever was already on its own clipboard. That
+   * matches AnyDesk's "no sync, but the keystroke still works" behavior.
    */
   private async handlePaste(): Promise<void> {
+    const cm = (window as any).connectionManager;
+    if (!cm?.isClipboardSyncEnabled) return;
     try {
+      // Image clipboards take precedence when image sync is on — Windows
+      // will list both image/png and text/plain after a screenshot copy,
+      // but the user almost always cares about the bitmap.
+      if (cm.isClipboardSyncImagesEnabled) {
+        const img = await window.titanAPI?.clipboard?.readImagePng?.();
+        if (typeof img === 'string' && img.length > 0) {
+          if (img.length > CLIPBOARD_IMAGE_MAX_BYTES * 2) {
+            console.warn('[Input] Skipping oversize image clipboard:', img.length);
+            return;
+          }
+          this.peer.send(CHANNEL_SYSTEM, {
+            type: 'system',
+            action: 'clipboard',
+            data: { direction: 'viewer-to-host', imagePng: img },
+          });
+          console.log('[Input] Clipboard image sent to host', img.length, 'b64 chars');
+          return;
+        }
+      }
       const text = await window.titanAPI?.clipboard?.read();
-      if (text != null) {
+      if (text != null && text.length > 0) {
+        const byteLen = new Blob([text]).size;
+        if (byteLen > CLIPBOARD_TEXT_MAX_BYTES) {
+          console.warn('[Input] Skipping oversize text clipboard:', byteLen);
+          return;
+        }
         this.peer.send(CHANNEL_SYSTEM, {
           type: 'system',
           action: 'clipboard',
@@ -443,7 +474,11 @@ export class InputHandler {
     };
     this.peer.send(CHANNEL_INPUT, downMsg);
 
-    // After a short delay, ask host to read its clipboard and send it back
+    // Only ask the host to mirror its clipboard back when sync is on. When
+    // off, the keystroke still copied on the host side — we just don't pull
+    // the result over the wire.
+    const cm = (window as any).connectionManager;
+    if (!cm?.isClipboardSyncEnabled) return;
     setTimeout(() => {
       this.peer.send(CHANNEL_SYSTEM, {
         type: 'system',

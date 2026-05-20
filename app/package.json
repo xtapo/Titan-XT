@@ -1,6 +1,6 @@
 {
   "name": "titan-xt-app",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Titan-XT Remote Desktop App",
   "author": "xtapo",
   "main": "dist/main/index.js",
@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.0",
+    "adm-zip": "^0.5.17",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
     "koffi": "^2.16.2",

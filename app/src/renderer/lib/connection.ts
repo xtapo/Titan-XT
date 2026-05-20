@@ -40,6 +40,9 @@ import {
   FileOfferMessage,
   FileChunkMessage,
   AnnotationMessage,
+  ClipboardSystemPayload,
+  CLIPBOARD_TEXT_MAX_BYTES,
+  CLIPBOARD_IMAGE_MAX_BYTES,
 } from '../../shared/protocol';
 import { auditLog, setActiveAuditSession } from './audit-logger';
 import { pushMetricsSample, resetMetricsHistory } from './metrics';
@@ -118,7 +121,40 @@ export class ConnectionManager {
   // Suppresses auto-reconnect on the closure cascade that follows.
   private intentionalClose: boolean = false;
   // File transfer: incoming chunks are buffered until 'complete' arrives.
-  private incomingFiles: Map<string, { name: string; size: number; chunks: string[]; received: number; totalChunks: number; targetHint?: 'desktop' }> = new Map();
+  private incomingFiles: Map<
+    string,
+    {
+      name: string;
+      size: number;
+      chunks: string[];
+      received: number;
+      totalChunks: number;
+      targetHint?: 'desktop';
+      receivedBytes: number;
+      lastTime: number;
+      lastBytes: number;
+      speed: string;
+      eta: string;
+    }
+  > = new Map();
+
+  private sendQueue: Array<{
+    fileId: string;
+    filePath: string;
+    fileName: string;
+    fileSize: number;
+    targetHint?: 'desktop';
+    status: 'queued' | 'sending' | 'complete' | 'error';
+    chunkIndex: number;
+    totalChunks: number;
+    bytesSent: number;
+    lastTime?: number;
+    lastBytes?: number;
+    speed?: string;
+    eta?: string;
+  }> = [];
+  private isSending: boolean = false;
+  private acceptResolvers: Map<string, (chunkIndex: number) => void> = new Map();
 
   // === Adaptive quality (viewer-side) ===
   // The viewer watches RTT + packet loss and asks the host to step the
@@ -162,6 +198,20 @@ export class ConnectionManager {
   private idleFpsPreviousPreset: QualityPreset | null = null;
   private idleFpsTimer: number | null = null;
   private boundVisibilityHandler = () => this.onVisibilityChange();
+
+  // === Two-way clipboard sync ===
+  // Off by default (privacy). When enabled at session start (per AppSettings)
+  // both peers poll their local clipboard and push changes over the system
+  // channel. Polling is cheap because we ask main for a fingerprint first
+  // and only re-read full text/image when it changes.
+  private clipboardSyncEnabled: boolean = false;
+  private clipboardSyncImages: boolean = false;
+  private clipboardWatchTimer: number | null = null;
+  private clipboardLastFingerprint: string | null = null;
+  // Set when we just wrote a remote-originated payload to the local OS
+  // clipboard. The next watcher tick observes our own write and would otherwise
+  // ricochet it back to the partner — this flag tells us to swallow it.
+  private clipboardSuppressOnce: boolean = false;
 
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
@@ -377,6 +427,10 @@ export class ConnectionManager {
       console.warn('[Conn] hideWallpaper failed:', err),
     );
 
+    // Pick up the user's saved clipboard-sync prefs before any channel goes
+    // live so the watcher's gating decisions are correct on the very first tick.
+    await this.loadClipboardSyncPrefs();
+
     // Navigate to session page in host mode (shows chat + status panel)
     enterHostMode(viewerId, this.incomingViewerName);
 
@@ -399,6 +453,11 @@ export class ConnectionManager {
           // Viewer drew on the screen — forward to main so the transparent
           // overlay window paints the stroke on the host's actual desktop.
           this.handleHostAnnotation(data);
+        }
+      },
+      onChannelOpen: (channel) => {
+        if (channel === CHANNEL_SYSTEM && this.clipboardSyncEnabled) {
+          this.startClipboardWatcher();
         }
       },
       onStateChange: (state) => {
@@ -488,6 +547,11 @@ export class ConnectionManager {
     this.role = 'viewer';
     this.partnerId = hostId;
 
+    // Pull the user's clipboard-sync prefs in the background so they're set
+    // by the time the system channel opens. Fire-and-forget — defaulting to
+    // off (privacy) is the safe behavior if the read races us.
+    this.loadClipboardSyncPrefs().catch(() => { /* best-effort */ });
+
     // Reset the metrics chart for the new session so the previous run's
     // history doesn't bleed into the panel.
     resetMetricsHistory();
@@ -541,6 +605,9 @@ export class ConnectionManager {
             action: 'request-monitors',
             data: {},
           });
+          if (this.clipboardSyncEnabled) {
+            this.startClipboardWatcher();
+          }
         }
       },
       onStateChange: (state) => {
@@ -551,8 +618,10 @@ export class ConnectionManager {
             this.cancelReconnect();
             hideReconnectingState();
             showToast('Đã kết nối lại', 'success');
+            setTimeout(() => this.processSendQueue(), 200);
           } else {
             showToast('Kết nối thành công!', 'success');
+            setTimeout(() => this.processSendQueue(), 200);
           }
           // Record this successful connect into history + address book (if pinned).
           this.recordSuccessfulConnect(hostId).catch(() => {});
@@ -804,6 +873,9 @@ export class ConnectionManager {
    * `targetHint='desktop'` flags the offer so the receiver writes straight
    * to its OS desktop — used by drag-onto-video / drag-onto-host-panel.
    */
+  /**
+   * Enqueue a file to be sent in the background send queue.
+   */
   async sendFile(
     filePath: string,
     fileName: string,
@@ -814,64 +886,124 @@ export class ConnectionManager {
       showToast('Chưa kết nối — không thể gửi file', 'error');
       return;
     }
+
+    const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    
+    // Add to our send queue
+    this.sendQueue.push({
+      fileId,
+      filePath,
+      fileName,
+      fileSize,
+      targetHint,
+      status: 'queued',
+      chunkIndex: 0,
+      totalChunks: 0,
+      bytesSent: 0,
+      speed: '',
+      eta: '',
+    });
+
+    // Add to UI as sending immediately. Progress will show "Đang chờ" until it starts.
+    addFileEntry(fileId, fileName, fileSize, 'sending');
+    updateFileProgress(fileId, 0, 'sending', undefined, '', 'Đang chờ...');
+
+    // Trigger queue processing
+    setTimeout(() => this.processSendQueue(), 50);
+  }
+
+  /**
+   * Process the sequential send queue.
+   */
+  private async processSendQueue(): Promise<void> {
+    if (this.isSending || !this.peer) return;
+
+    // Find the first queued file
+    const item = this.sendQueue.find((f) => f.status === 'queued');
+    if (!item) return;
+
     if (!window.titanAPI?.file?.readChunk) {
       showToast('Không có API đọc file', 'error');
       return;
     }
 
-    const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // CHUNK_SIZE MUST be a multiple of 3. Reason: each chunk is encoded to
-    // base64 independently before transit. Base64 only emits `=` padding
-    // when the input length isn't a multiple of 3. The receiver concatenates
-    // every chunk's base64 then decodes once via `Buffer.from(s, 'base64')`
-    // — and Node's base64 decoder stops at the first `=` it sees. So if any
-    // non-final chunk had padding (e.g. 64*1024=65536 → 65536%3=1 → ends in
-    // "=="), the decoder silently truncates the file to whatever came before
-    // the first `==`, producing a "successful" save with missing data.
-    // 64512 = 63 KB, 64512/3 = 21504 → no padding except possibly on the
-    // very last chunk, which is safe at the end of the concatenated string.
-    const CHUNK_SIZE = 64512;
-    const totalChunks = Math.max(1, Math.ceil(fileSize / CHUNK_SIZE));
-
-    // Surface in UI immediately so the sender sees feedback even on tiny files.
-    addFileEntry(fileId, fileName, fileSize, 'sending');
+    this.isSending = true;
+    item.status = 'sending';
 
     const offer: FileOfferMessage = {
-      type: 'file', action: 'offer',
-      fileId, fileName, fileSize,
-      fileType: fileName.split('.').pop() || '',
-      ...(targetHint ? { targetHint } : {}),
+      type: 'file',
+      action: 'offer',
+      fileId: item.fileId,
+      fileName: item.fileName,
+      fileSize: item.fileSize,
+      fileType: item.fileName.split('.').pop() || '',
+      ...(item.targetHint ? { targetHint: item.targetHint } : {}),
     };
+
     if (!this.peer.send(CHANNEL_FILE, offer)) {
-      updateFileProgress(fileId, 0, 'error');
+      item.status = 'queued';
+      this.isSending = false;
+      updateFileProgress(item.fileId, 0, 'error');
       return;
     }
 
-    let offset = 0;
-    let chunkIndex = 0;
+    // Wait for receiver to send 'accept' message with the starting chunkIndex
+    const chunkIndexToStart = await new Promise<number>((resolve) => {
+      this.acceptResolvers.set(item.fileId, resolve);
+      // Timeout fallback after 8 seconds
+      setTimeout(() => {
+        if (this.acceptResolvers.has(item.fileId)) {
+          this.acceptResolvers.delete(item.fileId);
+          resolve(0);
+        }
+      }, 8000);
+    });
+
+    const CHUNK_SIZE = 64512;
+    const totalChunks = Math.max(1, Math.ceil(item.fileSize / CHUNK_SIZE));
+    let chunkIndex = chunkIndexToStart;
+    let offset = chunkIndex * CHUNK_SIZE;
+
+    item.chunkIndex = chunkIndex;
+    item.totalChunks = totalChunks;
+    item.bytesSent = offset;
+    item.lastTime = Date.now();
+    item.lastBytes = offset;
+    item.speed = '';
+    item.eta = '';
+
     const channel = (this.peer as any)?.dataChannels?.get?.(CHANNEL_FILE) as RTCDataChannel | undefined;
 
-    while (offset < fileSize) {
-      const remaining = fileSize - offset;
+    while (offset < item.fileSize) {
+      if (!this.peer) {
+        item.status = 'queued';
+        this.isSending = false;
+        return;
+      }
+
+      const remaining = item.fileSize - offset;
       const size = Math.min(CHUNK_SIZE, remaining);
-      const base64 = await window.titanAPI.file.readChunk(filePath, offset, size);
+      const base64 = await window.titanAPI.file.readChunk(item.filePath, offset, size);
       if (base64 == null) {
-        updateFileProgress(fileId, 0, 'error');
-        showToast(`Lỗi đọc file ${fileName}`, 'error');
-        // Notify receiver so it doesn't wait forever.
-        this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
+        item.status = 'error';
+        updateFileProgress(item.fileId, 0, 'error');
+        showToast(`Lỗi đọc file ${item.fileName}`, 'error');
+        this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId: item.fileId });
+        this.isSending = false;
+        setTimeout(() => this.processSendQueue(), 100);
         return;
       }
 
       const chunk: FileChunkMessage = {
-        type: 'file', action: 'chunk',
-        fileId, chunkIndex, totalChunks,
+        type: 'file',
+        action: 'chunk',
+        fileId: item.fileId,
+        chunkIndex,
+        totalChunks,
         data: base64,
       };
 
-      // Backpressure: pause when the SCTP send buffer is congested.
-      // Without this, large files crash the data channel. Add a timeout
-      // so we don't hang forever if the channel is stuck.
+      // Backpressure support
       if (channel) {
         let waited = 0;
         while (channel.bufferedAmount > 1_000_000 && waited < 30_000) {
@@ -879,29 +1011,49 @@ export class ConnectionManager {
           waited += 100;
         }
         if (waited >= 30_000) {
-          updateFileProgress(fileId, 0, 'error');
-          showToast(`Timeout gửi ${fileName} — kênh bị tắc`, 'error');
-          this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
+          item.status = 'error';
+          updateFileProgress(item.fileId, 0, 'error');
+          showToast(`Timeout gửi ${item.fileName} — kênh bị tắc`, 'error');
+          this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId: item.fileId });
+          this.isSending = false;
+          setTimeout(() => this.processSendQueue(), 100);
           return;
         }
       }
 
       if (!this.peer.send(CHANNEL_FILE, chunk)) {
-        updateFileProgress(fileId, 0, 'error');
-        showToast(`Mất kết nối khi gửi ${fileName}`, 'error');
-        // Notify receiver so it doesn't wait forever.
-        this.peer.send(CHANNEL_FILE, { type: 'file', action: 'error', fileId });
+        item.status = 'queued';
+        const percent = Math.round((offset / item.fileSize) * 100);
+        updateFileProgress(item.fileId, percent, 'sending', undefined, 'Đang chờ...');
+        showToast(`Mất kết nối khi gửi ${item.fileName} — đã lưu hàng đợi`, 'warning');
+        this.isSending = false;
         return;
       }
 
       offset += size;
       chunkIndex += 1;
-      const percent = Math.round((offset / fileSize) * 100);
-      updateFileProgress(fileId, percent, 'sending');
+      item.bytesSent = offset;
+
+      // Calculate speed & ETA
+      const now = Date.now();
+      const elapsed = (now - (item.lastTime || 0)) / 1000;
+      if (elapsed >= 0.5) {
+        const deltaBytes = item.bytesSent - (item.lastBytes || 0);
+        const speedBytesPerSec = deltaBytes / elapsed;
+        const remainingBytes = item.fileSize - item.bytesSent;
+        const etaSec = speedBytesPerSec > 0 ? Math.round(remainingBytes / speedBytesPerSec) : 0;
+
+        item.speed = this.formatSpeed(speedBytesPerSec);
+        item.eta = this.formatETA(etaSec);
+        item.lastTime = now;
+        item.lastBytes = item.bytesSent;
+      }
+
+      const percent = Math.round((offset / item.fileSize) * 100);
+      updateFileProgress(item.fileId, percent, 'sending', undefined, item.speed, item.eta);
     }
 
-    // Flush bufferedAmount before sending 'complete' so all chunks are
-    // guaranteed to arrive before the receiver tries to reassemble.
+    // Flush channel buffer
     if (channel) {
       let waited = 0;
       while (channel.bufferedAmount > 0 && waited < 10_000) {
@@ -911,50 +1063,146 @@ export class ConnectionManager {
     }
 
     this.peer.send(CHANNEL_FILE, {
-      type: 'file', action: 'complete', fileId,
+      type: 'file',
+      action: 'complete',
+      fileId: item.fileId,
     });
-    updateFileProgress(fileId, 100, 'complete');
-    auditLog('file-sent', `Gửi file: ${fileName}`, {
-      details: { fileName, fileSize, targetHint: targetHint || 'default' },
+    item.status = 'complete';
+    updateFileProgress(item.fileId, 100, 'complete');
+    
+    auditLog('file-sent', `Gửi file: ${item.fileName}`, {
+      details: { fileName: item.fileName, fileSize: item.fileSize, targetHint: item.targetHint || 'default' },
     });
+
+    this.isSending = false;
+    // Process next queued item
+    setTimeout(() => this.processSendQueue(), 100);
+  }
+
+  /**
+   * Helper to format transfer speed nicely.
+   */
+  private formatSpeed(bytesPerSec: number): string {
+    if (bytesPerSec <= 0) return '0 KB/s';
+    const mb = bytesPerSec / (1024 * 1024);
+    if (mb >= 1) {
+      return `${mb.toFixed(1)} MB/s`;
+    }
+    const kb = bytesPerSec / 1024;
+    return `${kb.toFixed(0)} KB/s`;
+  }
+
+  /**
+   * Helper to format ETA nicely.
+   */
+  private formatETA(seconds: number): string {
+    if (seconds <= 0 || !isFinite(seconds)) return '0s';
+    if (seconds >= 3600) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      return `${h}h ${m}m`;
+    }
+    if (seconds >= 60) {
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}m ${s}s`;
+    }
+    return `${Math.round(seconds)}s`;
   }
 
   /**
    * Process incoming file messages on the receiver side.
-   * offer  → register a buffer
-   * chunk  → append + update progress
+   * offer  → register a buffer and send accept back
+   * accept → resume sending file at chunkIndex (sender-side)
+   * chunk  → append + update progress with speed/ETA
    * complete → write to disk via main process and mark done
    */
   private async handleFileMessage(msg: FileMessage): Promise<void> {
     if (!msg || msg.type !== 'file') return;
 
     if (msg.action === 'offer') {
-      this.incomingFiles.set(msg.fileId, {
-        name: msg.fileName,
-        size: msg.fileSize,
-        chunks: new Array(0),
-        received: 0,
-        totalChunks: 0,
-        targetHint: msg.targetHint,
+      let entry = this.incomingFiles.get(msg.fileId);
+      if (!entry) {
+        entry = {
+          name: msg.fileName,
+          size: msg.fileSize,
+          chunks: [],
+          received: 0,
+          totalChunks: 0,
+          targetHint: msg.targetHint,
+          receivedBytes: 0,
+          lastTime: Date.now(),
+          lastBytes: 0,
+          speed: '',
+          eta: '',
+        };
+        this.incomingFiles.set(msg.fileId, entry);
+        addFileEntry(msg.fileId, msg.fileName, msg.fileSize, 'receiving');
+      }
+
+      // Check if we already have chunks and can resume
+      let resumeIndex = 0;
+      if (entry.chunks.length > 0) {
+        for (let i = 0; i < entry.totalChunks; i++) {
+          if (entry.chunks[i] === undefined) {
+            resumeIndex = i;
+            break;
+          }
+        }
+      }
+
+      // Send accept message with the resume chunkIndex back to the sender
+      this.peer?.send(CHANNEL_FILE, {
+        type: 'file',
+        action: 'accept',
+        fileId: msg.fileId,
+        chunkIndex: resumeIndex,
       });
-      addFileEntry(msg.fileId, msg.fileName, msg.fileSize, 'receiving');
+      return;
+    }
+
+    if (msg.action === 'accept') {
+      const resolve = this.acceptResolvers.get(msg.fileId);
+      if (resolve) {
+        this.acceptResolvers.delete(msg.fileId);
+        resolve(msg.chunkIndex ?? 0);
+      }
       return;
     }
 
     if (msg.action === 'chunk') {
       const entry = this.incomingFiles.get(msg.fileId);
       if (!entry) return;
-      // Capture totalChunks from the first chunk message so we can verify
-      // completeness before saving.
+      
       if (entry.totalChunks === 0) {
         entry.totalChunks = msg.totalChunks;
       }
-      // Store chunk by index so out-of-order arrivals (shouldn't happen on
-      // ordered channels, but be defensive) still reassemble correctly.
+      
       entry.chunks[msg.chunkIndex] = msg.data;
       entry.received += 1;
+
+      // Track raw binary bytes received to calculate speed & ETA
+      // Base64 size estimation: data length * 0.75 minus padding chars count
+      const decodedLength = Math.round(msg.data.length * 0.75) - (msg.data.endsWith('==') ? 2 : msg.data.endsWith('=') ? 1 : 0);
+      entry.receivedBytes += decodedLength;
+
+      // Speed & ETA calculations (every 500ms)
+      const now = Date.now();
+      const elapsed = (now - entry.lastTime) / 1000;
+      if (elapsed >= 0.5) {
+        const deltaBytes = entry.receivedBytes - entry.lastBytes;
+        const speedBytesPerSec = deltaBytes / elapsed;
+        const remainingBytes = entry.size - entry.receivedBytes;
+        const etaSec = speedBytesPerSec > 0 ? Math.round(remainingBytes / speedBytesPerSec) : 0;
+
+        entry.speed = this.formatSpeed(speedBytesPerSec);
+        entry.eta = this.formatETA(etaSec);
+        entry.lastTime = now;
+        entry.lastBytes = entry.receivedBytes;
+      }
+
       const percent = Math.round((entry.received / msg.totalChunks) * 100);
-      updateFileProgress(msg.fileId, percent, 'receiving');
+      updateFileProgress(msg.fileId, percent, 'receiving', undefined, entry.speed, entry.eta);
       return;
     }
 
@@ -962,12 +1210,6 @@ export class ConnectionManager {
       const entry = this.incomingFiles.get(msg.fileId);
       if (!entry) return;
       try {
-        // Verify we got every chunk before writing — a missing chunk would
-        // silently produce a truncated file because Array#join skips holes.
-        // SCTP is ordered + reliable on a normal data channel, but we've
-        // seen `peer.send` return false mid-transfer (channel closing,
-        // bufferedAmount overflow handling) and that drops the chunk on
-        // the sender side without surfacing here.
         const expected = entry.totalChunks;
         if (expected === 0 || entry.received < expected) {
           updateFileProgress(msg.fileId, 0, 'error');
@@ -985,7 +1227,6 @@ export class ConnectionManager {
           }
         }
 
-        // Concatenate base64 chunks then hand off to main for disk write.
         const fullBase64 = entry.chunks.join('');
         const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64, entry.targetHint);
         console.log('[Conn] saveFile result:', result);
@@ -1609,81 +1850,148 @@ export class ConnectionManager {
    * Handle clipboard system messages.
    *
    * HOST receives:
-   *   'viewer-to-host'    — viewer sent clipboard text to paste on host
+   *   'viewer-to-host'    — viewer sent clipboard text/image to paste on host
+   *   'viewer-to-host-no-paste' — same but sync only, no Ctrl+V follow-up
    *   'request-from-host' — viewer wants to read host clipboard (after Ctrl+C)
    *
    * VIEWER receives:
-   *   'host-to-viewer'    — host sent its clipboard text back
+   *   'host-to-viewer'    — host sent its clipboard text/image back
    */
-  private async handleClipboardMessage(data: any): Promise<void> {
+  private async handleClipboardMessage(data: ClipboardSystemPayload | any): Promise<void> {
     if (!data?.direction) return;
+    // Defense in depth — if the local user turned sync off mid-session, drop
+    // any in-flight clipboard messages from the partner regardless of which
+    // direction they're going.
+    if (!this.clipboardSyncEnabled) return;
 
     if (this.role === 'host') {
-      if (data.direction === 'viewer-to-host' && typeof data.text === 'string') {
-        // Viewer wants to paste → write text to host clipboard, then simulate Ctrl+V
-        try {
-          await window.titanAPI?.clipboard?.write(data.text);
-          console.log('[Conn] Clipboard received from viewer, simulating paste');
-          auditLog('clipboard-sync', `Đối tác dán nội dung (${data.text.length} ký tự)`, {
+      if (data.direction === 'viewer-to-host') {
+        // Viewer wants to paste → write content to host clipboard, then simulate Ctrl+V
+        const wrote = await this.writeRemoteClipboardLocally(data);
+        if (wrote) {
+          auditLog('clipboard-sync', `Đối tác dán nội dung (${this.describeClipboardPayload(data)})`, {
             role: 'host',
-            details: { direction: 'viewer-to-host', length: data.text.length },
+            details: { direction: 'viewer-to-host', kind: wrote },
           });
-          // Simulate Ctrl+V on the host
-          await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'Control', code: 'ControlLeft', modifiers: ['ctrl'] });
-          await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'v', code: 'KeyV', modifiers: ['ctrl'] });
-          await window.titanAPI?.input?.simulate({ type: 'key', action: 'up', key: 'v', code: 'KeyV', modifiers: ['ctrl'] });
-          await window.titanAPI?.input?.simulate({ type: 'key', action: 'up', key: 'Control', code: 'ControlLeft', modifiers: [] });
-        } catch (err) {
-          console.error('[Conn] Clipboard paste on host failed:', err);
+          try {
+            // Simulate Ctrl+V on the host
+            await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'Control', code: 'ControlLeft', modifiers: ['ctrl'] });
+            await window.titanAPI?.input?.simulate({ type: 'key', action: 'down', key: 'v', code: 'KeyV', modifiers: ['ctrl'] });
+            await window.titanAPI?.input?.simulate({ type: 'key', action: 'up', key: 'v', code: 'KeyV', modifiers: ['ctrl'] });
+            await window.titanAPI?.input?.simulate({ type: 'key', action: 'up', key: 'Control', code: 'ControlLeft', modifiers: [] });
+          } catch (err) {
+            console.error('[Conn] Clipboard paste keystroke on host failed:', err);
+          }
         }
-      } else if (data.direction === 'viewer-to-host-no-paste' && typeof data.text === 'string') {
-        // Same as above but the viewer is just syncing — no Ctrl+V follow-up.
-        try {
-          await window.titanAPI?.clipboard?.write(data.text);
-          auditLog('clipboard-sync', `Đối tác đồng bộ clipboard (${data.text.length} ký tự)`, {
+      } else if (data.direction === 'viewer-to-host-no-paste') {
+        const wrote = await this.writeRemoteClipboardLocally(data);
+        if (wrote) {
+          auditLog('clipboard-sync', `Đối tác đồng bộ clipboard (${this.describeClipboardPayload(data)})`, {
             role: 'host',
-            details: { direction: 'viewer-to-host-sync', length: data.text.length },
+            details: { direction: 'viewer-to-host-sync', kind: wrote },
           });
-        } catch (err) {
-          console.error('[Conn] Clipboard sync on host failed:', err);
         }
       } else if (data.direction === 'request-from-host') {
         // Viewer wants host clipboard → read it and send back
         try {
           // Small delay to let the copy operation complete on the OS
           await new Promise((r) => setTimeout(r, 100));
-          const text = await window.titanAPI?.clipboard?.read();
-          if (text != null) {
+          const payload = await this.readLocalClipboardForSend();
+          if (payload) {
             this.peer?.send(CHANNEL_SYSTEM, {
               type: 'system',
               action: 'clipboard',
-              data: { direction: 'host-to-viewer', text },
+              data: { direction: 'host-to-viewer', ...payload },
             });
-            auditLog('clipboard-sync', `Đối tác sao chép từ máy này (${text.length} ký tự)`, {
+            auditLog('clipboard-sync', `Đối tác sao chép từ máy này (${this.describeClipboardPayload(payload)})`, {
               role: 'host',
-              details: { direction: 'host-to-viewer', length: text.length },
+              details: { direction: 'host-to-viewer' },
             });
-            console.log('[Conn] Clipboard sent to viewer:', text.length, 'chars');
           }
         } catch (err) {
           console.error('[Conn] Failed to read host clipboard:', err);
         }
       }
     } else if (this.role === 'viewer') {
-      if (data.direction === 'host-to-viewer' && typeof data.text === 'string') {
-        // Host sent clipboard content → write to viewer's local clipboard
-        try {
-          await window.titanAPI?.clipboard?.write(data.text);
-          auditLog('clipboard-sync', `Sao chép từ máy đối tác (${data.text.length} ký tự)`, {
+      if (data.direction === 'host-to-viewer') {
+        const wrote = await this.writeRemoteClipboardLocally(data);
+        if (wrote) {
+          auditLog('clipboard-sync', `Sao chép từ máy đối tác (${this.describeClipboardPayload(data)})`, {
             role: 'viewer',
-            details: { direction: 'host-to-viewer', length: data.text.length },
+            details: { direction: 'host-to-viewer', kind: wrote },
           });
-          console.log('[Conn] Clipboard received from host:', data.text.length, 'chars');
-        } catch (err) {
-          console.error('[Conn] Failed to write to local clipboard:', err);
         }
       }
     }
+  }
+
+  /**
+   * Apply an inbound clipboard payload to the local OS clipboard. Returns the
+   * kind of content that was written ('text' / 'image') or null on failure.
+   * Sets clipboardSuppressOnce so the watcher doesn't echo the same content
+   * back to the partner on its next tick.
+   */
+  private async writeRemoteClipboardLocally(
+    data: ClipboardSystemPayload,
+  ): Promise<'text' | 'image' | null> {
+    try {
+      if (typeof data.imagePng === 'string' && data.imagePng.length > 0) {
+        if (!this.clipboardSyncImages) return null;
+        if (data.imagePng.length > CLIPBOARD_IMAGE_MAX_BYTES * 2) return null;
+        const ok = await window.titanAPI?.clipboard?.writeImagePng?.(data.imagePng);
+        if (!ok) return null;
+        this.clipboardSuppressOnce = true;
+        return 'image';
+      }
+      if (typeof data.text === 'string') {
+        const byteLen = new Blob([data.text]).size;
+        if (byteLen > CLIPBOARD_TEXT_MAX_BYTES) return null;
+        await window.titanAPI?.clipboard?.write(data.text);
+        this.clipboardSuppressOnce = true;
+        return 'text';
+      }
+    } catch (err) {
+      console.error('[Conn] writeRemoteClipboardLocally failed:', err);
+    }
+    return null;
+  }
+
+  /**
+   * Read the local OS clipboard into a sendable payload, honoring the size
+   * caps and the per-session image-sync flag. Returns null when the clipboard
+   * is empty, oversized, or only holds an image while images are disabled.
+   */
+  private async readLocalClipboardForSend(): Promise<{ text?: string; imagePng?: string } | null> {
+    try {
+      if (this.clipboardSyncImages) {
+        const img = await window.titanAPI?.clipboard?.readImagePng?.();
+        if (typeof img === 'string' && img.length > 0) {
+          if (img.length > CLIPBOARD_IMAGE_MAX_BYTES * 2) {
+            console.warn('[Conn] Skipping oversize clipboard image:', img.length, 'b64 chars');
+            return null;
+          }
+          return { imagePng: img };
+        }
+      }
+      const text = await window.titanAPI?.clipboard?.read();
+      if (typeof text === 'string' && text.length > 0) {
+        const byteLen = new Blob([text]).size;
+        if (byteLen > CLIPBOARD_TEXT_MAX_BYTES) {
+          console.warn('[Conn] Skipping oversize clipboard text:', byteLen, 'bytes');
+          return null;
+        }
+        return { text };
+      }
+    } catch (err) {
+      console.error('[Conn] readLocalClipboardForSend failed:', err);
+    }
+    return null;
+  }
+
+  private describeClipboardPayload(p: { text?: string; imagePng?: string }): string {
+    if (p.imagePng) return `ảnh ${Math.round(p.imagePng.length * 0.75 / 1024)} KB`;
+    if (typeof p.text === 'string') return `${p.text.length} ký tự`;
+    return 'rỗng';
   }
 
   /**
@@ -1693,6 +2001,7 @@ export class ConnectionManager {
    */
   pullHostClipboard(): boolean {
     if (this.role !== 'viewer') return false;
+    if (!this.clipboardSyncEnabled) return false;
     return (
       this.peer?.send(CHANNEL_SYSTEM, {
         type: 'system',
@@ -1709,19 +2018,108 @@ export class ConnectionManager {
    */
   async pushClipboardToHost(): Promise<boolean> {
     if (this.role !== 'viewer') return false;
-    try {
-      const text = await window.titanAPI?.clipboard?.read();
-      if (text == null) return false;
-      return (
-        this.peer?.send(CHANNEL_SYSTEM, {
-          type: 'system',
-          action: 'clipboard',
-          data: { direction: 'viewer-to-host-no-paste', text },
-        }) ?? false
-      );
-    } catch {
-      return false;
+    if (!this.clipboardSyncEnabled) return false;
+    const payload = await this.readLocalClipboardForSend();
+    if (!payload) return false;
+    return (
+      this.peer?.send(CHANNEL_SYSTEM, {
+        type: 'system',
+        action: 'clipboard',
+        data: { direction: 'viewer-to-host-no-paste', ...payload },
+      }) ?? false
+    );
+  }
+
+  /**
+   * Toggle two-way clipboard sync mid-session. Idempotent. The toolbar
+   * "Auto sync" switch and the privacy "stop sharing" panic-button both
+   * call this. Persists the new value back to AppSettings so the choice
+   * survives the next session.
+   */
+  setClipboardSync(opts: { enabled?: boolean; images?: boolean }): void {
+    if (typeof opts.enabled === 'boolean') this.clipboardSyncEnabled = opts.enabled;
+    if (typeof opts.images === 'boolean') this.clipboardSyncImages = opts.images;
+    if (this.clipboardSyncEnabled && this.peer) {
+      this.startClipboardWatcher();
+    } else {
+      this.stopClipboardWatcher();
     }
+    const patch: any = {};
+    if (typeof opts.enabled === 'boolean') patch.clipboardSyncEnabled = opts.enabled;
+    if (typeof opts.images === 'boolean') patch.clipboardSyncImages = opts.images;
+    if (Object.keys(patch).length > 0) {
+      window.titanAPI?.settings?.update?.(patch).catch(() => { /* best-effort */ });
+    }
+  }
+
+  get isClipboardSyncEnabled(): boolean {
+    return this.clipboardSyncEnabled;
+  }
+
+  get isClipboardSyncImagesEnabled(): boolean {
+    return this.clipboardSyncImages;
+  }
+
+  /**
+   * Begin polling the local clipboard for changes. Uses the cheap
+   * fingerprint IPC so we only re-read full content when something has
+   * actually changed. Idempotent. Stopped from disconnect() and from
+   * setClipboardSync({enabled: false}).
+   */
+  private startClipboardWatcher(): void {
+    if (this.clipboardWatchTimer) return;
+    if (!this.peer) return;
+    // Seed the fingerprint so the first tick after start doesn't ricochet
+    // whatever happens to be on the clipboard right now.
+    this.refreshClipboardFingerprint().catch(() => { /* best-effort */ });
+    this.clipboardWatchTimer = window.setInterval(() => {
+      this.tickClipboardWatcher().catch((err) =>
+        console.warn('[Conn] clipboard watcher tick failed:', err),
+      );
+    }, 700);
+  }
+
+  private stopClipboardWatcher(): void {
+    if (this.clipboardWatchTimer) {
+      clearInterval(this.clipboardWatchTimer);
+      this.clipboardWatchTimer = null;
+    }
+    this.clipboardLastFingerprint = null;
+    this.clipboardSuppressOnce = false;
+  }
+
+  private async refreshClipboardFingerprint(): Promise<void> {
+    const fp = await window.titanAPI?.clipboard?.fingerprint?.();
+    if (!fp) return;
+    this.clipboardLastFingerprint = `${fp.textHash || ''}|${fp.imageHash || ''}`;
+  }
+
+  private async tickClipboardWatcher(): Promise<void> {
+    if (!this.clipboardSyncEnabled || !this.peer) return;
+    const fp = await window.titanAPI?.clipboard?.fingerprint?.();
+    if (!fp) return;
+    const key = `${fp.textHash || ''}|${fp.imageHash || ''}`;
+    if (key === this.clipboardLastFingerprint) return;
+    this.clipboardLastFingerprint = key;
+    // Swallow the very next change after we just wrote remote content
+    // locally — otherwise the watcher would echo the partner's payload
+    // straight back at them.
+    if (this.clipboardSuppressOnce) {
+      this.clipboardSuppressOnce = false;
+      return;
+    }
+    const payload = await this.readLocalClipboardForSend();
+    if (!payload) return;
+    const direction = this.role === 'viewer' ? 'viewer-to-host-no-paste' : 'host-to-viewer';
+    this.peer.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'clipboard',
+      data: { direction, ...payload },
+    });
+    auditLog('clipboard-sync', `Tự động đồng bộ clipboard (${this.describeClipboardPayload(payload)})`, {
+      role: this.role || undefined,
+      details: { direction, auto: true },
+    });
   }
 
   // === Heartbeat ===
@@ -1772,6 +2170,7 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
+    this.stopClipboardWatcher();
     // Release host-side BlockInput before we tear anything else down. If we
     // skip this and the worker survives (it does — it's session-scoped),
     // the user is locked out of their own keyboard until the next desktop
@@ -1917,6 +2316,22 @@ export class ConnectionManager {
       await window.titanAPI?.wallpaper?.hide();
     } catch (err) {
       console.warn('[Conn] maybeHideWallpaper error:', err);
+    }
+  }
+
+  /**
+   * Load the user's saved clipboard-sync preferences into the session. Called
+   * from setupAsHost / setupAsViewer before any data channel goes live so the
+   * watcher has the right gates by the time the partner can ask anything.
+   */
+  private async loadClipboardSyncPrefs(): Promise<void> {
+    try {
+      const settings = await window.titanAPI?.settings?.get();
+      this.clipboardSyncEnabled = !!settings?.clipboardSyncEnabled;
+      this.clipboardSyncImages = !!settings?.clipboardSyncImages;
+    } catch {
+      this.clipboardSyncEnabled = false;
+      this.clipboardSyncImages = false;
     }
   }
 
