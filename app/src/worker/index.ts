@@ -31,10 +31,11 @@ import {
   PipeResponse,
   PipeEvent,
 } from '../shared/pipe-protocol';
-import { loadNut, executeInputMessage } from '../main/input-executor';
 import { executeRemoteAction } from '../main/system-actions-executor';
 import { attachToInputDesktop, currentDesktopName } from './desktop-attach';
 import { captureFrame, disposeCapture } from './gdi-capture';
+import { executeInputSync } from './worker-input';
+import { bindNativeInput, setBlockInput } from './native-input';
 
 const SESSION_ARG_PREFIX = '--session=';
 
@@ -50,6 +51,12 @@ const jsonClients = new Set<net.Socket>();
 // one Agent per session so this is fine.
 let videoClient: net.Socket | null = null;
 let videoTimer: NodeJS.Timeout | null = null;
+
+// Sticky host-input block. The OS clears BlockInput on every desktop
+// switch (lock screen, UAC dim, Ctrl+Alt+Del), so we mirror the desired
+// state here and re-assert it whenever attachToInputDesktop reports a new
+// desktop name. Toggled by Agent via 'input.block-host' pipe requests.
+let hostInputBlocked = false;
 
 function parseSessionId(): number {
   for (const arg of process.argv) {
@@ -70,12 +77,24 @@ async function handle(req: PipeRequest): Promise<PipeResponse> {
         return { id: req.id, ok: true, data: { pong: true, pid: process.pid, desktop: currentDesktopName() } };
 
       case 'input.simulate':
-        // Re-attach before each input batch so we follow the active input
+        // Re-attach before each input event so we follow the active input
         // desktop across lock/unlock and UAC dim screen transitions. Cheap
         // when nothing changed (one OpenInputDesktop + name compare).
+        // Critical: dispatch via SendInput on THIS thread (the one we just
+        // attached) — nut.js runs on libuv worker threads that never
+        // re-attach, so its input lands on the original Default desktop and
+        // is silently dropped on the lock screen.
         attachToInputDesktop();
-        await executeInputMessage(req.payload);
+        executeInputSync(req.payload);
         return { id: req.id, ok: true };
+
+      case 'input.block-host': {
+        const block = !!req.payload?.block;
+        hostInputBlocked = block;
+        attachToInputDesktop();
+        const ok = setBlockInput(block);
+        return { id: req.id, ok, error: ok ? undefined : 'BlockInput failed' };
+      }
 
       case 'system.execute': {
         const result = await executeRemoteAction(req.payload.action);
@@ -201,12 +220,9 @@ async function main(): Promise<void> {
   // Subsequent calls re-check on every input batch (handle()).
   attachToInputDesktop();
 
-  // Preload nut.js up-front so the first input event isn't delayed by the
-  // native binding spinning up.
-  const nutOk = await loadNut();
-  if (!nutOk) {
-    console.error('[Worker] nut.js failed to load — input simulation unavailable');
-  }
+  // Pre-bind user32/SendInput so the first input call doesn't pay the
+  // koffi load cost. Cheap and idempotent.
+  bindNativeInput();
 
   const server = net.createServer((socket) => {
     console.log('[Worker] json client connected');
@@ -243,16 +259,22 @@ async function main(): Promise<void> {
       console.log(`[Worker] input desktop changed: "${lastDesk}" -> "${d}"`);
       lastDesk = d;
       broadcastDesktopChange(d);
+      // BlockInput is per-desktop and the OS clears it on every switch.
+      // Re-assert so the host stays blocked across UAC dim / Ctrl+Alt+Del
+      // when control is locked.
+      if (hostInputBlocked) setBlockInput(true);
     }
   }, 500);
 
   process.on('SIGTERM', () => {
     console.log('[Worker] SIGTERM — shutting down');
+    if (hostInputBlocked) { setBlockInput(false); hostInputBlocked = false; }
     stopCaptureLoop();
     videoServer.close();
     server.close(() => process.exit(0));
   });
   process.on('SIGINT', () => {
+    if (hostInputBlocked) { setBlockInput(false); hostInputBlocked = false; }
     stopCaptureLoop();
     videoServer.close();
     server.close(() => process.exit(0));
