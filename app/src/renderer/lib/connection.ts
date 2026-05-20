@@ -428,6 +428,8 @@ export class ConnectionManager {
           // track.applyConstraints. Starting high and clamping down works reliably;
           // starting low and trying to bump up often fails on some platforms.
           frameRate: { max: 60 },
+          // Hide host cursor in video stream to support local cursor rendering
+          cursor: 'never' as any,
         },
       });
 
@@ -1191,6 +1193,8 @@ export class ConnectionManager {
           width: { max: DEFAULT_MAX_WIDTH },
           height: { max: DEFAULT_MAX_HEIGHT },
           frameRate: { max: 60 },
+          // Hide host cursor in video stream to support local cursor rendering
+          cursor: 'never' as any,
         },
       });
 

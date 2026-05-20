@@ -1,0 +1,18 @@
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Capacitor / Android — generated build artifacts; sources are committed
+android/.gradle/
+android/.idea/
+android/app/build/
+android/build/
+android/captures/
+android/local.properties
+android/**/.cxx/
+
+# OS / editor
+.DS_Store
+*.iml

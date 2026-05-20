@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Titan-XT Viewer</string>
+    <string name="title_activity_main">Titan-XT Viewer</string>
+    <string name="package_name">com.titanxt.viewer</string>
+    <string name="custom_url_scheme">com.titanxt.viewer</string>
+</resources>
