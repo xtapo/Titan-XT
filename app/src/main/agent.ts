@@ -169,14 +169,12 @@ function createMainWindow(startHidden: boolean = false): void {
     console.error('[Main] render-process-gone:', details);
   });
 
-  // Minimize to tray instead of close — but tear down any active remote
-  // session first so the partner doesn't keep "Đang điều khiển" / chat panel
-  // up against a window the user thinks they closed.
+  // Minimize to tray instead of close — but ensure any active remote session
+  // is torn down first by routing through a disconnect-then-hide flow.
   mainWindow.on('close', (event) => {
     if (tray) {
       event.preventDefault();
       mainWindow?.webContents.send('app:before-hide');
-      mainWindow?.hide();
     }
   });
 
@@ -246,6 +244,7 @@ function setupIPC(): void {
     }
   });
   ipcMain.handle('window:close', () => mainWindow?.close());
+  ipcMain.handle('window:hideAfterDisconnect', () => mainWindow?.hide());
   ipcMain.handle('window:isMaximized', () => mainWindow?.isMaximized());
 
   // === Unattended auto-launch ===
