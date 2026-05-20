@@ -1259,6 +1259,20 @@ body.host-mode-collapsed .host-panel-body { display: none; }
   color: #ffd86b;
 }
 
+/* Active "audio sharing" state for the audio toggle in the host panel header.
+   Green so the host can spot at a glance that microphone-style icon means
+   "currently streaming sound to the partner". Inactive state shows the
+   crossed-out speaker glyph that ships in the markup. */
+.host-panel-iconbtn-active {
+  background: rgba(80, 220, 130, 0.22);
+  color: #6bdc8a;
+}
+
+.host-panel-iconbtn-active:hover {
+  background: rgba(80, 220, 130, 0.34);
+  color: #6bdc8a;
+}
+
 /* Per-viewer mode badge in the "Ai đang xem" list. Lets the host see at a
    glance whether each connected viewer is controlling or just watching. */
 .host-panel-viewer-badge {

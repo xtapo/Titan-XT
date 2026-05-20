@@ -20,6 +20,7 @@ export type AuditEventType =
   | 'file-sent'
   | 'file-received'
   | 'clipboard-sync'
+  | 'host-audio'
   | 'annotation-clear'
   | 'wallpaper-toggle'
   | 'recording-start'

@@ -550,6 +550,13 @@ async function openSettingsModal() {
               </label>
               <p class="field-hint">Giúp giảm băng thông và tăng độ mượt khi mạng yếu. Hình nền sẽ tự động phục hồi khi ngắt kết nối.</p>
             </div>
+            <div class="settings-field">
+              <label class="checkbox-option">
+                <input type="checkbox" id="settings-host-audio-enabled" />
+                <span>Chia sẻ âm thanh hệ thống cho khách (mặc định cho phiên mới)</span>
+              </label>
+              <p class="field-hint">Khi bật, âm thanh đang phát trên máy bạn (nhạc, cuộc họp, video) sẽ được gửi sang khách. Có thể bật/tắt nhanh bằng nút loa trên bảng host. Không hỗ trợ trên macOS.</p>
+            </div>
           </div>
           <div class="settings-section">
             <h3>Đồng bộ clipboard hai chiều</h3>
@@ -655,6 +662,7 @@ async function openSettingsModal() {
       const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
       const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
       const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+      const hostAudioInput = document.getElementById('settings-host-audio-enabled') as HTMLInputElement;
       const clipSyncInput = document.getElementById('settings-clipboard-sync-enabled') as HTMLInputElement;
       const clipImgInput = document.getElementById('settings-clipboard-sync-images') as HTMLInputElement;
       const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
@@ -666,6 +674,7 @@ async function openSettingsModal() {
           downloadFolder: folderInput?.value || '',
           askBeforeSave: !!askInput?.checked,
           hideWallpaper: !!hideWpInput?.checked,
+          hostAudioEnabled: !!hostAudioInput?.checked,
           clipboardSyncEnabled: !!clipSyncInput?.checked,
           clipboardSyncImages: !!clipImgInput?.checked,
           unattendedAutoStart: !!unAutoStart?.checked,
@@ -750,6 +759,7 @@ async function openSettingsModal() {
     const folderInput = document.getElementById('settings-download-folder') as HTMLInputElement;
     const askInput = document.getElementById('settings-ask-before-save') as HTMLInputElement;
     const hideWpInput = document.getElementById('settings-hide-wallpaper') as HTMLInputElement;
+    const hostAudioInput = document.getElementById('settings-host-audio-enabled') as HTMLInputElement;
     const clipSyncInput = document.getElementById('settings-clipboard-sync-enabled') as HTMLInputElement;
     const clipImgInput = document.getElementById('settings-clipboard-sync-images') as HTMLInputElement;
     const unEnabled = document.getElementById('settings-unattended-enabled') as HTMLInputElement;
@@ -759,6 +769,7 @@ async function openSettingsModal() {
     if (folderInput) folderInput.value = settings?.downloadFolder || '';
     if (askInput) askInput.checked = !!settings?.askBeforeSave;
     if (hideWpInput) hideWpInput.checked = !!settings?.hideWallpaper;
+    if (hostAudioInput) hostAudioInput.checked = !!settings?.hostAudioEnabled;
     if (clipSyncInput) clipSyncInput.checked = !!settings?.clipboardSyncEnabled;
     if (clipImgInput) clipImgInput.checked = !!settings?.clipboardSyncImages;
 
@@ -911,6 +922,7 @@ const AUDIT_TYPE_LABELS: Record<string, string> = {
   'file-sent': 'Gửi file',
   'file-received': 'Nhận file',
   'clipboard-sync': 'Đồng bộ clipboard',
+  'host-audio': 'Âm thanh máy chủ',
   'annotation-clear': 'Xóa nét vẽ',
   'wallpaper-toggle': 'Toggle hình nền',
   'recording-start': 'Bắt đầu ghi',

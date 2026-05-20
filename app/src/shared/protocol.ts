@@ -183,6 +183,7 @@ export interface SystemMessage {
     | 'switch-monitor'
     | 'monitor-list'
     | 'request-monitors'
+    | 'host-audio'
     | 'peer-bye';
   // Optional because graceful tear-down ('peer-bye') ships without a payload.
   data?: any;

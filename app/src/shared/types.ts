@@ -124,6 +124,14 @@ export interface AppSettings {
    * user may want text-only sync on metered links.
    */
   clipboardSyncImages: boolean;
+  /**
+   * Share host system audio (loopback) with the viewer. Off by default
+   * because a casual support session shouldn't leak whatever the host is
+   * playing — music, a meeting, a video call. The host can flip the toggle
+   * mid-session from the host panel; the viewer's existing audio toggle
+   * decides whether to actually play it on their end.
+   */
+  hostAudioEnabled: boolean;
 }
 
 export interface SessionState {

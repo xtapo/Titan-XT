@@ -213,6 +213,16 @@ export class ConnectionManager {
   // ricochet it back to the partner — this flag tells us to swallow it.
   private clipboardSuppressOnce: boolean = false;
 
+  // === Host audio (loopback) ===
+  // Off by default for privacy — the host shouldn't leak whatever's playing
+  // (music, a meeting, a video call) just because a technician happens to be
+  // connected. We always *request* the loopback track at capture time on
+  // platforms that support it (Windows / Linux) and toggle the track's
+  // `enabled` flag instead of adding/removing the WebRTC sender, which would
+  // force a renegotiation. macOS has no system loopback API exposed through
+  // getDisplayMedia, so the toggle is a no-op there.
+  private hostAudioEnabled: boolean = false;
+
   constructor(serverUrl?: string) {
     this.serverUrl = serverUrl || DEFAULT_SIGNAL_SERVER;
   }
@@ -431,6 +441,10 @@ export class ConnectionManager {
     // live so the watcher's gating decisions are correct on the very first tick.
     await this.loadClipboardSyncPrefs();
 
+    // Same with the host-audio preference — load before getDisplayMedia so we
+    // can mute the loopback track immediately if the user opted out.
+    await this.loadHostAudioPref();
+
     // Navigate to session page in host mode (shows chat + status panel)
     enterHostMode(viewerId, this.incomingViewerName);
 
@@ -456,8 +470,18 @@ export class ConnectionManager {
         }
       },
       onChannelOpen: (channel) => {
-        if (channel === CHANNEL_SYSTEM && this.clipboardSyncEnabled) {
-          this.startClipboardWatcher();
+        if (channel === CHANNEL_SYSTEM) {
+          if (this.clipboardSyncEnabled) {
+            this.startClipboardWatcher();
+          }
+          // Tell the viewer about our current audio sharing state so its menu
+          // shows accurate text from the first frame, not the default "Bật âm
+          // thanh máy đối tác" that implies audio is available.
+          this.peer?.send(CHANNEL_SYSTEM, {
+            type: 'system',
+            action: 'host-audio',
+            data: { enabled: this.hostAudioEnabled, hasTrack: this.getHostAudioTracks().length > 0 },
+          });
         }
       },
       onStateChange: (state) => {
@@ -518,6 +542,12 @@ export class ConnectionManager {
       });
 
       this.peer.addStream(sources);
+      // Loopback audio is captured but gated by the user's preference so the
+      // session never accidentally streams sound. Toggling later flips
+      // track.enabled in place — no SDP renegotiation needed.
+      for (const track of sources.getAudioTracks()) {
+        track.enabled = this.hostAudioEnabled;
+      }
       console.log('[Conn] Screen capture successful');
     } catch (err) {
       console.error('[Conn] Screen capture failed:', err);
@@ -1657,6 +1687,19 @@ export class ConnectionManager {
         this.handleClipboardMessage(msg.data);
         break;
 
+      case 'host-audio':
+        // Host told the viewer whether it's currently shipping audio. We
+        // surface this in the View menu so the existing audio toggle can show
+        // an honest label even before any audio frame has been decoded.
+        if (this.role === 'viewer') {
+          const enabled = !!msg.data?.enabled;
+          const hasTrack = !!msg.data?.hasTrack;
+          import('../pages/session').then(({ updateRemoteAudioAvailability }) => {
+            updateRemoteAudioAvailability(enabled, hasTrack);
+          });
+        }
+        break;
+
       case 'remote-action':
         // Only the host should ever execute these. Ignore on viewer side.
         if (this.role === 'host') {
@@ -2333,6 +2376,73 @@ export class ConnectionManager {
       this.clipboardSyncEnabled = false;
       this.clipboardSyncImages = false;
     }
+  }
+
+  /**
+   * Pick up the saved host-audio preference. Defaults to off when settings
+   * can't be read so a session never accidentally starts streaming sound.
+   */
+  private async loadHostAudioPref(): Promise<void> {
+    try {
+      const settings = await window.titanAPI?.settings?.get();
+      this.hostAudioEnabled = !!settings?.hostAudioEnabled;
+    } catch {
+      this.hostAudioEnabled = false;
+    }
+  }
+
+  /**
+   * Host-side: enable/disable streaming the system's loopback audio to the
+   * viewer mid-session. We always *capture* the audio track at session start
+   * on platforms that support loopback (Windows, Linux) and just toggle
+   * `track.enabled` here — flipping the flag is instant and doesn't trigger
+   * SDP renegotiation, while removing the sender would.
+   *
+   * Persists the choice back to AppSettings so the next session starts in
+   * the same state. Pushes a system-channel notice to the viewer so its
+   * audio menu can reflect "đối tác không gửi âm thanh" vs an active stream.
+   */
+  setHostAudioEnabled(enabled: boolean): boolean {
+    if (this.role !== 'host') return false;
+    this.hostAudioEnabled = enabled;
+    const tracks = this.getHostAudioTracks();
+    let touched = false;
+    for (const track of tracks) {
+      track.enabled = enabled;
+      touched = true;
+    }
+    this.peer?.send(CHANNEL_SYSTEM, {
+      type: 'system',
+      action: 'host-audio',
+      data: { enabled, hasTrack: touched },
+    });
+    auditLog('host-audio', enabled ? 'Đã bật chia sẻ âm thanh' : 'Đã tắt chia sẻ âm thanh', {
+      role: 'host',
+      details: { enabled, hasTrack: touched },
+    });
+    window.titanAPI?.settings?.update?.({ hostAudioEnabled: enabled }).catch(() => {
+      /* best-effort */
+    });
+    return true;
+  }
+
+  get isHostAudioEnabled(): boolean {
+    return this.hostAudioEnabled;
+  }
+
+  /**
+   * Walk the active sender list and return any audio MediaStreamTracks the
+   * host is currently shipping. Used by setHostAudioEnabled to flip enabled
+   * on every loopback track at once.
+   */
+  private getHostAudioTracks(): MediaStreamTrack[] {
+    const out: MediaStreamTrack[] = [];
+    const senders = (this.peer as any)?.pc?.getSenders?.() as RTCRtpSender[] | undefined;
+    if (!senders) return out;
+    for (const s of senders) {
+      if (s.track && s.track.kind === 'audio') out.push(s.track);
+    }
+    return out;
   }
 
   /**

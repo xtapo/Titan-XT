@@ -22,6 +22,7 @@ const defaultSettings: AppSettings = {
   auditEnabled: true,
   clipboardSyncEnabled: false,
   clipboardSyncImages: false,
+  hostAudioEnabled: false,
 };
 
 /**

@@ -1099,6 +1099,45 @@ export function resetWallpaperToggleUI(): void {
 }
 
 /**
+ * Repaint the host-panel audio button so its enabled/disabled state matches
+ * ConnectionManager. Called on toggle and right after the panel mounts.
+ */
+function refreshHostAudioBtn(): void {
+  const btn = document.getElementById('host-panel-audio');
+  if (!btn) return;
+  const enabled = !!window.connectionManager?.isHostAudioEnabled;
+  btn.classList.toggle('host-panel-iconbtn-active', enabled);
+  btn.setAttribute(
+    'title',
+    enabled
+      ? 'Đang chia sẻ âm thanh hệ thống — bấm để tắt'
+      : 'Chia sẻ âm thanh hệ thống với khách (tắt mặc định)',
+  );
+}
+
+/**
+ * Viewer-side: host announced its audio sharing state changed mid-session.
+ * Update the View → Audio menu so it always reflects the truth, even before
+ * the first audio frame is decoded (or when the host platform doesn't have
+ * a loopback API at all, e.g. macOS — `hasTrack` is false there).
+ */
+export function updateRemoteAudioAvailability(enabled: boolean, hasTrack: boolean): void {
+  const label = document.querySelector('#menu-audio-toggle .dropdown-item-label');
+  const check = document.querySelector('[data-audio-check]');
+  if (!label || !check) return;
+  if (!enabled || !hasTrack) {
+    check.classList.add('hidden');
+    label.textContent = hasTrack
+      ? 'Đối tác đã tắt chia sẻ âm thanh'
+      : 'Đối tác không gửi âm thanh';
+    const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+    if (video) video.muted = true;
+  } else {
+    label.textContent = 'Bật âm thanh máy đối tác';
+  }
+}
+
+/**
  * Reflect the current ConnectionManager clipboard-sync state into the
  * Clipboard sub-menu's two toggles. Called whenever the user flips a switch
  * and right after a session begins so the menu matches the persisted prefs.
@@ -1362,6 +1401,14 @@ export function enterHostMode(viewerId: string, viewerName?: string): void {
                 <path d="M7 11V7a5 5 0 0110 0v4"/>
               </svg>
             </button>
+            <button class="host-panel-iconbtn" id="host-panel-audio"
+                    title="Chia sẻ âm thanh hệ thống với khách">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                <line x1="23" y1="9" x2="17" y2="15"/>
+                <line x1="17" y1="9" x2="23" y2="15"/>
+              </svg>
+            </button>
             <button class="host-panel-iconbtn" id="host-panel-collapse" title="Thu nhỏ">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polyline points="15 18 9 12 15 6"/>
@@ -1466,6 +1513,17 @@ function setupHostPanelEvents(): void {
   document.getElementById('host-panel-lock')?.addEventListener('click', () => {
     toggleHostControlLock();
   });
+  document.getElementById('host-panel-audio')?.addEventListener('click', () => {
+    const cm = window.connectionManager;
+    if (!cm) return;
+    const next = !cm.isHostAudioEnabled;
+    if (cm.setHostAudioEnabled(next)) {
+      refreshHostAudioBtn();
+      showToast(next ? 'Đang chia sẻ âm thanh hệ thống' : 'Đã tắt chia sẻ âm thanh', next ? 'success' : 'info');
+    }
+  });
+  // Initial visual state — load from the current session's flag.
+  refreshHostAudioBtn();
   document.getElementById('host-panel-collapse')?.addEventListener('click', () => {
     setHostPanelCollapsed(true);
   });
