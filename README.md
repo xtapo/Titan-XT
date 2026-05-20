@@ -35,10 +35,17 @@ Phần mềm hỗ trợ điều khiển máy tính từ xa. Xây dựng trên El
 | Bảo mật | ID 9 số + mật khẩu 4 ký tự, xác thực challenge-response, kết nối WebRTC mã hoá đầu-cuối (DTLS-SRTP) |
 | Cộng tác | Chat tích hợp, kéo-thả truyền file hai chiều, khay điều khiển nổi (UltraViewer-style) |
 | Hệ thống | Tự khởi động cùng Windows, chạy nền dưới dạng tray icon, lệnh restart/shutdown/đăng xuất từ xa |
-| Hiệu năng | WebRTC P2P (không qua server khi đã handshake xong), tự ẩn hình nền khi chia sẻ màn hình |
+| Hiệu năng | WebRTC P2P (không qua server khi đã handshake xong), tự ẩn hình nền khi chia sẻ màn hình, **vẽ con trỏ chuột cục bộ (0ms latency)** |
 | Mobile viewer | PWA chạy trên trình duyệt điện thoại — điều khiển host qua cử chỉ touch, xem [web-viewer/README.md](web-viewer/README.md) |
 | Auto-update | Tự kiểm tra GitHub Releases, tải & cài đặt ngay trong app |
 | UI | Giao diện tối, sổ địa chỉ "Máy của tôi", lịch sử kết nối |
+
+### Tối ưu hóa Hiệu năng & Trải nghiệm (Core Performance)
+
+* **Vẽ con trỏ chuột cục bộ (Zero-latency Cursor)**: Khác với các ứng dụng điều khiển từ xa truyền thống chụp và gửi hình ảnh con trỏ chuột từ Host về qua video WebRTC (gây hiện tượng trễ/nặng nề khi di chuyển chuột), Titan-XT sử dụng cơ chế tối ưu hóa nâng cao:
+  * **Ẩn con trỏ chuột của Host**: Áp dụng thuộc tính `cursor: 'never'` trong các luồng bắt màn hình `getDisplayMedia` để ngăn hệ điều hành ghi đè con trỏ chuột vật lý của Host vào video stream.
+  * **Vẽ con trỏ ảo phía Viewer**: Viewer tự động ẩn con trỏ mặc định và tự vẽ một con trỏ ảo `synthetic-cursor` (định dạng đồ họa vector SVG) trực tiếp trên giao diện bám sát chuyển động chuột của người dùng.
+  * **Trải nghiệm mượt mà 0ms**: Giúp phản hồi chuyển động chuột mượt mà tức thì (0ms latency), loại bỏ hoàn toàn độ trễ mạng và lỗi hiển thị hai con trỏ chuột song song (double cursors).
 
 ---
 
