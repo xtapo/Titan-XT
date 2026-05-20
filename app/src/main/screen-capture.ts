@@ -24,10 +24,18 @@ async function getScreenSources(): Promise<MonitorInfo[]> {
   const primaryDisplay = screen.getPrimaryDisplay();
 
   return sources.map((source, index) => {
-    const display = displays[index] || primaryDisplay;
+    // desktopCapturer.getSources() and screen.getAllDisplays() have no
+    // guaranteed shared ordering — the OS / driver decides each list. Pair on
+    // display_id (Chromium populates this with the matching Display id as a
+    // string) so the bounds + isPrimary flags follow the right monitor on a
+    // multi-display setup. Falls back to primary when display_id is empty
+    // (older Chromium builds, some Linux capturers) so the picker still works.
+    const display =
+      displays.find((d) => d.id.toString() === source.display_id) ||
+      primaryDisplay;
     return {
       id: source.id,
-      name: source.name || `Monitor ${index + 1}`,
+      name: source.name || `Màn hình ${index + 1}`,
       bounds: display.bounds,
       isPrimary: display.id === primaryDisplay.id,
       thumbnail: source.thumbnail.toDataURL(),

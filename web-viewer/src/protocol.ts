@@ -35,5 +35,5 @@ export interface ChatMessage {
 export interface SystemMessage {
   type: 'system';
   action: string;
-  data: any;
+  data?: any;
 }

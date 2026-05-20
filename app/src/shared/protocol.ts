@@ -175,14 +175,17 @@ export interface SystemMessage {
     | 'ping'
     | 'pong'
     | 'quality'
+    | 'codec'
     | 'remote-action'
     | 'remote-action-result'
     | 'mode-change'
     | 'control-lock'
     | 'switch-monitor'
     | 'monitor-list'
-    | 'request-monitors';
-  data: any;
+    | 'request-monitors'
+    | 'peer-bye';
+  // Optional because graceful tear-down ('peer-bye') ships without a payload.
+  data?: any;
 }
 
 export type ViewerMode = 'control' | 'view';

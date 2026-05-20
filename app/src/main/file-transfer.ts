@@ -65,11 +65,17 @@ export function setupFileTransfer(): void {
     }
   });
 
-  // Select files to send
+  // Select files to send.
+  //
+  // Windows can only run the open dialog in one mode at a time — combining
+  // 'openFile' + 'openDirectory' silently drops the directory mode, leaving
+  // users unable to pick folders. Folder transfer flows through the
+  // drag-and-drop path instead (file:prepareFileOrFolder zips them on the fly),
+  // so this picker stays files-only.
   ipcMain.handle('file:selectFiles', async () => {
     const result = await dialog.showOpenDialog({
-      properties: ['openFile', 'openDirectory', 'multiSelections'],
-      title: 'Chọn file hoặc thư mục để gửi',
+      properties: ['openFile', 'multiSelections'],
+      title: 'Chọn file để gửi',
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -78,12 +84,11 @@ export function setupFileTransfer(): void {
 
     return result.filePaths.map((filePath) => {
       const stats = fs.statSync(filePath);
-      const isDir = stats.isDirectory();
       return {
         path: filePath,
         name: path.basename(filePath),
-        size: isDir ? 0 : stats.size,
-        type: isDir ? 'folder' : path.extname(filePath).substring(1),
+        size: stats.size,
+        type: path.extname(filePath).substring(1),
       };
     });
   });
