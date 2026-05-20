@@ -102,6 +102,8 @@ async function init() {
       connectionManager?.disconnect();
     } catch (e) {
       console.warn('[Main] disconnect on hide failed:', e);
+    } finally {
+      window.titanAPI?.window?.hideAfterDisconnect();
     }
   });
 

@@ -282,16 +282,21 @@ export class InputHandler {
     // trackpads), 1 (lines, ~3 per notch on Firefox/Linux), or 2 (pages).
     // We translate to "lines" since nut.js' scroll units map to wheel notches
     // on Windows / lines on Linux / discrete steps on macOS.
+    // SCROLL_SPEED multiplies the final tick count to compensate for the
+    // network round-trip "feel" — locally the OS reacts to the wheel notch
+    // immediately, but here every tick goes Viewer → DC → nut.js, so a 1:1
+    // translation feels sluggish. 2.5× lands close to AnyDesk's default.
+    const SCROLL_SPEED = 2.5;
     const toTicks = (v: number): number => {
-      if (e.deltaMode === 1) return v;        // already in lines
-      if (e.deltaMode === 2) return v * 10;   // pages → many lines
-      return v / 33;                          // pixels → lines (≈100/3 px per notch)
+      if (e.deltaMode === 1) return v * SCROLL_SPEED;        // already in lines
+      if (e.deltaMode === 2) return v * 10 * SCROLL_SPEED;   // pages → many lines
+      return (v / 33) * SCROLL_SPEED;                        // pixels → lines (≈100/3 px per notch)
     };
     // Preserve a 1-tick floor in the direction of motion so a tiny trackpad
     // nudge still scrolls something on the host instead of rounding to zero.
     const quantize = (raw: number): number => {
       const t = Math.round(toTicks(raw));
-      if (t !== 0) return Math.max(-30, Math.min(30, t));
+      if (t !== 0) return Math.max(-60, Math.min(60, t));
       if (raw > 0) return 1;
       if (raw < 0) return -1;
       return 0;

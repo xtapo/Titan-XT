@@ -226,8 +226,17 @@ export class ConnectionManager {
         // stale event from the server. Skip the toast so the user doesn't
         // see "Phiên kết nối đã kết thúc" right after their own click.
         if (!this.peer && !this.role) return;
+        const wasHost = this.role === 'host';
+        const partnerLabel = wasHost
+          ? (this.incomingViewerName || 'Khách')
+          : 'Đối tác';
         this.disconnect();
-        showToast('Phiên kết nối đã kết thúc', 'info');
+        showToast(
+          wasHost
+            ? `${partnerLabel} đã ngắt kết nối`
+            : 'Phiên kết nối đã kết thúc',
+          'info',
+        );
         // Surface the home screen so the user isn't stuck on a dead session UI.
         import('../main').then(({ navigateTo }) => navigateTo('home'));
       });
@@ -1448,9 +1457,20 @@ export class ConnectionManager {
           this.intentionalClose = true;
           this.cancelReconnect();
           this.viewerCredentials = null;
+          const wasHost = this.role === 'host';
+          const partnerLabel = wasHost
+            ? (this.incomingViewerName || 'Khách')
+            : 'Đối tác';
           this.disconnect();
-          showToast('Phiên kết nối đã kết thúc', 'info');
-          import('../main').then(({ navigateTo }) => navigateTo('home'));
+          showToast(
+            wasHost
+              ? `${partnerLabel} đã ngắt kết nối`
+              : 'Phiên kết nối đã kết thúc',
+            'info',
+          );
+          if (!wasHost) {
+            import('../main').then(({ navigateTo }) => navigateTo('home'));
+          }
         }
         break;
     }

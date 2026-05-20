@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('titanAPI', {
     isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
     setHostMode: (enable: boolean) => ipcRenderer.invoke('window:setHostMode', enable),
     setHostCollapsed: (collapsed: boolean) => ipcRenderer.invoke('window:setHostCollapsed', collapsed),
+    hideAfterDisconnect: () => ipcRenderer.invoke('window:hideAfterDisconnect'),
     onMaximizeChange: (cb: (maximized: boolean) => void) => {
       ipcRenderer.on('window:maximizeChanged', (_e, maximized) => cb(maximized));
     },
