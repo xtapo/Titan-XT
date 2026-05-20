@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
   // === Input Simulation ===
   input: {
     simulate: (event: any) => ipcRenderer.invoke('input:simulate', event),
+    setHostBlocked: (block: boolean) =>
+      ipcRenderer.invoke('input:setHostBlocked', block) as Promise<{ success: boolean; error?: string }>,
   },
 
   // === System Actions (host-side execution) ===

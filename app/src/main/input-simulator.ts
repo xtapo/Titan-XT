@@ -92,4 +92,18 @@ export function setupInputSimulator(): void {
       return { success: false, error: err.message };
     }
   });
+
+  // Host-side BlockInput toggle. Only effective when the SYSTEM worker is
+  // running — falls back to ok:false so the renderer can show a "khong the
+  // chan" toast instead of silently doing nothing.
+  ipcMain.handle('input:setHostBlocked', async (_event, block: boolean) => {
+    if (process.platform !== 'win32') return { success: false, error: 'Chỉ hỗ trợ trên Windows' };
+    if (!pipe.worthTrying()) return { success: false, error: 'Worker không sẵn sàng' };
+    try {
+      const res = await pipe.setHostInputBlocked(!!block);
+      return { success: res.ok, error: res.error };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
 }

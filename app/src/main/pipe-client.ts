@@ -213,6 +213,16 @@ export class PipeClient {
     return this.send({ id: this.nextRequestId(), kind: 'input.simulate', payload });
   }
 
+  /** Toggle host-machine BlockInput at SYSTEM level. Returns ok=false on
+   *  pipe error so callers can decide whether to surface the failure. */
+  async setHostInputBlocked(block: boolean): Promise<PipeResponse> {
+    return this.send({
+      id: this.nextRequestId(),
+      kind: 'input.block-host',
+      payload: { block },
+    });
+  }
+
   async executeSystem(action: RemoteActionId): Promise<PipeResponse> {
     return this.send({ id: this.nextRequestId(), kind: 'system.execute', payload: { action } });
   }

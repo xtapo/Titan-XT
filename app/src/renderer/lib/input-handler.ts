@@ -286,7 +286,7 @@ export class InputHandler {
     // network round-trip "feel" — locally the OS reacts to the wheel notch
     // immediately, but here every tick goes Viewer → DC → nut.js, so a 1:1
     // translation feels sluggish. 2.5× lands close to AnyDesk's default.
-    const SCROLL_SPEED = 2.5;
+    const SCROLL_SPEED = 8;
     const toTicks = (v: number): number => {
       if (e.deltaMode === 1) return v * SCROLL_SPEED;        // already in lines
       if (e.deltaMode === 2) return v * 10 * SCROLL_SPEED;   // pages → many lines
@@ -296,7 +296,7 @@ export class InputHandler {
     // nudge still scrolls something on the host instead of rounding to zero.
     const quantize = (raw: number): number => {
       const t = Math.round(toTicks(raw));
-      if (t !== 0) return Math.max(-60, Math.min(60, t));
+      if (t !== 0) return Math.max(-150, Math.min(150, t));
       if (raw > 0) return 1;
       if (raw < 0) return -1;
       return 0;

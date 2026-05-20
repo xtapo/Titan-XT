@@ -89,6 +89,15 @@ export class ConnectionManager {
   // Host-side: viewer's machine name captured from the incoming connect-request,
   // so the host panel can display "PC-NAME" instead of just the digit ID.
   private incomingViewerName: string = '';
+  // Host-side: mode the incoming viewer asked for ('control' | 'view'). We
+  // need this to decide whether to engage host-side BlockInput on session
+  // start — a 'view' viewer never sends input, so blocking the host's
+  // physical input would be needless friction.
+  private incomingViewerMode: 'control' | 'view' = 'control';
+  // Host-side: tracks whether we currently have user32 BlockInput active
+  // so we don't spam IPC re-asserting the same state every time something
+  // relevant changes (mode flip, control-lock toggle, desktop switch echo).
+  private hostInputBlocked: boolean = false;
 
   // === Auto-reconnect state (viewer-side only) ===
   // Cached so we can re-issue connect-request after a peer drop without
@@ -193,6 +202,7 @@ export class ConnectionManager {
       this.socket.on('connect-request', (data: any) => {
         console.log(`[Conn] Incoming connection from ${data.fromId}`);
         this.incomingViewerName = data.fromName || '';
+        this.incomingViewerMode = data.mode === 'view' ? 'view' : 'control';
         // In auto-accept mode, respond to password challenge
       });
 
@@ -393,6 +403,13 @@ export class ConnectionManager {
       },
       onStateChange: (state) => {
         console.log('[Conn] Host peer state:', state);
+        if (state === 'connected') {
+          // Viewer is fully attached — engage host-side BlockInput so the
+          // physical user at the host can't fight the cursor while a
+          // technician is driving. No-op when the viewer asked for 'view'
+          // mode or the host has locked control.
+          this.applyHostInputBlock();
+        }
         // Viewer dropped (disconnect, network loss, app close) — tear the
         // host UI down so the mini-panel doesn't sit there showing "Ai đang
         // xem máy tính bạn" with a phantom client.
@@ -670,11 +687,44 @@ export class ConnectionManager {
     auditLog(locked ? 'control-lock' : 'control-unlock',
       locked ? 'Đã khóa quyền điều khiển' : 'Đã mở khóa quyền điều khiển',
       { role: 'host', severity: locked ? 'warn' : 'info' });
+    // Releasing the lock means the viewer is back in control — re-engage
+    // host-side BlockInput so the physical user can't fight the cursor.
+    // Conversely, while the host has explicitly locked control, leave the
+    // host's own input free.
+    this.applyHostInputBlock();
     return this.peer?.send(CHANNEL_SYSTEM, {
       type: 'system',
       action: 'control-lock',
       data: { locked },
     }) ?? false;
+  }
+
+  /**
+   * Host-side: ask the SYSTEM worker to toggle BlockInput so the user
+   * sitting at the host can't bump the cursor / spam the keyboard while a
+   * viewer is actively driving it.
+   *
+   * We block iff (role === host) AND a viewer is connected in 'control'
+   * mode AND the host hasn't toggled the local control-lock. Idempotent:
+   * checks `this.hostInputBlocked` and skips IPC when nothing changed, so
+   * it's safe to call from every state-change site.
+   *
+   * BlockInput releases on Ctrl+Alt+Del / lock-screen / desktop switch —
+   * the worker re-asserts on every desktop change so the block is sticky
+   * across UAC dim screens for the lifetime of the session.
+   */
+  private applyHostInputBlock(): void {
+    if (this.role !== 'host') return;
+    const want = !!this.peer
+      && !this.controlLocked
+      && this.incomingViewerMode === 'control';
+    if (want === this.hostInputBlocked) return;
+    const api = (window as any).titanAPI?.input?.setHostBlocked;
+    if (typeof api !== 'function') return;
+    this.hostInputBlocked = want;
+    Promise.resolve(api(want)).catch((err: unknown) => {
+      console.warn('[Conn] setHostBlocked failed:', err);
+    });
   }
 
   // === Handle WebRTC signals ===
@@ -1383,6 +1433,10 @@ export class ConnectionManager {
         // Host receives notification that viewer flipped Control/View.
         if (this.role === 'host') {
           const mode = msg.data?.mode === 'view' ? 'view' : 'control';
+          this.incomingViewerMode = mode;
+          // Re-evaluate host-side input block: a viewer in 'view' mode
+          // doesn't need us to suppress the host's physical input.
+          this.applyHostInputBlock();
           import('../pages/session').then(({ updateHostViewerMode }) => {
             updateHostViewerMode(this.partnerId, mode);
           });
@@ -1718,6 +1772,17 @@ export class ConnectionManager {
   disconnect(): void {
     this.intentionalClose = true;
     this.cancelReconnect();
+    // Release host-side BlockInput before we tear anything else down. If we
+    // skip this and the worker survives (it does — it's session-scoped),
+    // the user is locked out of their own keyboard until the next desktop
+    // switch clears it. Safe to call even if it was never engaged.
+    if (this.hostInputBlocked) {
+      const api = (window as any).titanAPI?.input?.setHostBlocked;
+      if (typeof api === 'function') {
+        Promise.resolve(api(false)).catch(() => { /* best-effort */ });
+      }
+      this.hostInputBlocked = false;
+    }
     if (this.idleFpsTimer) {
       clearTimeout(this.idleFpsTimer);
       this.idleFpsTimer = null;
@@ -1782,6 +1847,7 @@ export class ConnectionManager {
     }
     this.role = null;
     this.partnerId = '';
+    this.incomingViewerMode = 'control';
     this.historyRecordedFor = null;
     // Reset the network badge so the next session doesn't inherit the prior
     // one's color before the first stats sample lands.

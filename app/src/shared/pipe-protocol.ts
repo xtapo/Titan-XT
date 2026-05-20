@@ -35,6 +35,7 @@ export function videoPipePathForSession(sessionId: number): string {
 export type RequestKind =
   | 'ping'
   | 'input.simulate'
+  | 'input.block-host'
   | 'system.execute';
 
 export interface BaseRequest {
@@ -51,12 +52,28 @@ export interface InputSimulateRequest extends BaseRequest {
   payload: MouseMessage | KeyMessage;
 }
 
+/**
+ * Toggle host-side BlockInput. While `block: true`, the OS swallows mouse
+ * + keyboard events from the physical host machine (Ctrl+Alt+Del still
+ * works — that's a Secure Attention Sequence). Worker re-applies on every
+ * input-desktop switch because the OS clears the block on lock / unlock /
+ * UAC dim screen.
+ */
+export interface InputBlockHostRequest extends BaseRequest {
+  kind: 'input.block-host';
+  payload: { block: boolean };
+}
+
 export interface SystemExecuteRequest extends BaseRequest {
   kind: 'system.execute';
   payload: { action: RemoteActionId };
 }
 
-export type PipeRequest = PingRequest | InputSimulateRequest | SystemExecuteRequest;
+export type PipeRequest =
+  | PingRequest
+  | InputSimulateRequest
+  | InputBlockHostRequest
+  | SystemExecuteRequest;
 
 // === Response ===
 
