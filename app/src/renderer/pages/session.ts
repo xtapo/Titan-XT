@@ -1789,6 +1789,13 @@ function renderFileRowActions(container: HTMLElement | null, savedPath: string):
   // Idempotent — re-rendering on a row that already has buttons is a no-op.
   if (container.querySelector('[data-action="open-folder"]')) return;
   container.innerHTML = `
+    <button class="file-action-btn" data-action="open-file" title="Mở file bằng ứng dụng mặc định">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+      </svg>
+      <span>Mở file</span>
+    </button>
     <button class="file-action-btn" data-action="open-folder" title="Mở thư mục chứa file">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
@@ -1796,6 +1803,12 @@ function renderFileRowActions(container: HTMLElement | null, savedPath: string):
       <span>Mở thư mục</span>
     </button>
   `;
+  container.querySelector('[data-action="open-file"]')?.addEventListener('click', async () => {
+    const result = await window.titanAPI?.file?.openFile?.(savedPath);
+    if (result && !result.success) {
+      showToast(result.error || 'Không thể mở file', 'error');
+    }
+  });
   container.querySelector('[data-action="open-folder"]')?.addEventListener('click', () => {
     window.titanAPI?.file?.showInFolder?.(savedPath);
   });

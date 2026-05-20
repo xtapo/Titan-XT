@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('titanAPI', {
     saveFile: (fileName: string, base64Data: string, targetHint?: 'desktop') =>
       ipcRenderer.invoke('file:saveFile', fileName, base64Data, targetHint),
     showInFolder: (filePath: string) => ipcRenderer.invoke('file:showInFolder', filePath),
+    openFile: (filePath: string) =>
+      ipcRenderer.invoke('file:openFile', filePath) as Promise<{ success: boolean; error?: string }>,
   },
 
   // === Dialog ===

@@ -127,4 +127,15 @@ export function setupFileTransfer(): void {
     const { shell } = require('electron');
     shell.showItemInFolder(filePath);
   });
+
+  // Open file with the OS default application
+  ipcMain.handle('file:openFile', async (_event, filePath: string) => {
+    const { shell } = require('electron');
+    if (!filePath || !fs.existsSync(filePath)) {
+      return { success: false, error: 'File không tồn tại' };
+    }
+    const err = await shell.openPath(filePath);
+    if (err) return { success: false, error: err };
+    return { success: true };
+  });
 }
