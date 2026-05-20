@@ -43,6 +43,7 @@ import {
 } from '../../shared/protocol';
 import { auditLog, setActiveAuditSession } from './audit-logger';
 import { pushMetricsSample, resetMetricsHistory } from './metrics';
+import { installLockFallback, setLockFallbackPeer } from './lock-fallback';
 
 /**
  * Recolor the toolbar's network-condition badge based on the latest sample.
@@ -428,8 +429,6 @@ export class ConnectionManager {
           // track.applyConstraints. Starting high and clamping down works reliably;
           // starting low and trying to bump up often fails on some platforms.
           frameRate: { max: 60 },
-          // Hide host cursor in video stream to support local cursor rendering
-          cursor: 'never' as any,
         },
       });
 
@@ -439,6 +438,13 @@ export class ConnectionManager {
       console.error('[Conn] Screen capture failed:', err);
       showToast('Không thể chia sẻ màn hình', 'error');
     }
+
+    // Wire the lock-screen fallback to this peer. The bridge in main listens
+    // for desktop-change events from the SYSTEM worker and pushes GDI frames
+    // here when the user locks; setLockFallbackPeer lets us swap them onto
+    // *this* PeerConnection's video sender. installLockFallback is idempotent.
+    installLockFallback(this.peer);
+    setLockFallbackPeer(this.peer);
 
     // Create and send offer
     const offer = await this.peer.createOffer();
@@ -923,6 +929,7 @@ export class ConnectionManager {
         // Concatenate base64 chunks then hand off to main for disk write.
         const fullBase64 = entry.chunks.join('');
         const result = await window.titanAPI?.file?.saveFile(entry.name, fullBase64, entry.targetHint);
+        console.log('[Conn] saveFile result:', result);
         if (result?.success) {
           updateFileProgress(msg.fileId, 100, 'complete', result.path);
           const where = entry.targetHint === 'desktop' ? ' (Desktop)' : '';
@@ -1193,8 +1200,6 @@ export class ConnectionManager {
           width: { max: DEFAULT_MAX_WIDTH },
           height: { max: DEFAULT_MAX_HEIGHT },
           frameRate: { max: 60 },
-          // Hide host cursor in video stream to support local cursor rendering
-          cursor: 'never' as any,
         },
       });
 

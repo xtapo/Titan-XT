@@ -10,10 +10,25 @@
  *
  * Important: requests are async. We multiplex by `id` over a single
  * connection so a fast burst of mouse-move events doesn't serialize.
+ *
+ * Plus a parallel video pipe client used to receive GDI captures from the
+ * worker while the user has locked the workstation. Decoupled from this
+ * class — see `VideoPipeClient` below — so a hot input path doesn't pay
+ * for video parsing.
  */
 
 import * as net from 'net';
-import { pipePathForSession, FrameDecoder, encodeFrame, PipeRequest, PipeResponse } from '../shared/pipe-protocol';
+import {
+  pipePathForSession,
+  videoPipePathForSession,
+  FrameDecoder,
+  encodeFrame,
+  PipeRequest,
+  PipeResponse,
+  PipeEvent,
+  isPipeEvent,
+} from '../shared/pipe-protocol';
+import { VideoFrameDecoder, VideoFrame } from '../shared/video-pipe-protocol';
 import type { MouseMessage, KeyMessage, RemoteActionId } from '../shared/protocol';
 
 interface Pending {
@@ -30,7 +45,7 @@ export class PipeClient {
   private sessionId: number;
   private socket: net.Socket | null = null;
   private connecting: Promise<void> | null = null;
-  private decoder = new FrameDecoder<PipeResponse>();
+  private decoder = new FrameDecoder<PipeResponse | PipeEvent>();
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private backoff = RECONNECT_BASE_MS;
@@ -40,6 +55,12 @@ export class PipeClient {
   private lastFailure: number = 0;
   /** Suppress reconnect attempts for this many ms after a hard failure. */
   private static FAILURE_QUIET_MS = 2_000;
+
+  // Last desktop name reported by the worker via PipeEvent. Empty string
+  // means "unknown / not yet reported". UI / capture switching consult this
+  // to decide whether to use the GDI fallback.
+  private lastDesktop: string = '';
+  private desktopListeners = new Set<(name: string) => void>();
 
   constructor(sessionId: number) {
     this.sessionId = sessionId;
@@ -96,7 +117,13 @@ export class PipeClient {
     this.socket = sock;
     sock.on('data', (chunk) => {
       const msgs = this.decoder.push(chunk);
-      for (const res of msgs) this.dispatch(res);
+      for (const msg of msgs) {
+        if (isPipeEvent(msg)) {
+          this.handleEvent(msg);
+        } else {
+          this.dispatch(msg as PipeResponse);
+        }
+      }
     });
     sock.on('error', (err) => {
       console.error('[PipeClient] socket error:', err.message);
@@ -106,6 +133,31 @@ export class PipeClient {
       this.failAllPending(new Error('pipe closed'));
       // Don't auto-reconnect aggressively — wait for the next request.
     });
+  }
+
+  private handleEvent(ev: PipeEvent): void {
+    if (ev.event === 'desktop') {
+      const prev = this.lastDesktop;
+      this.lastDesktop = ev.desktop;
+      if (prev !== ev.desktop) {
+        for (const fn of this.desktopListeners) {
+          try { fn(ev.desktop); } catch (err) {
+            console.warn('[PipeClient] desktop listener threw:', (err as Error).message);
+          }
+        }
+      }
+    }
+  }
+
+  /** Latest desktop name reported by the worker (e.g. "Default" / "Winlogon"). */
+  desktopName(): string {
+    return this.lastDesktop;
+  }
+
+  /** Subscribe to desktop-change events. Returns an unsubscribe function. */
+  onDesktopChange(fn: (name: string) => void): () => void {
+    this.desktopListeners.add(fn);
+    return () => this.desktopListeners.delete(fn);
   }
 
   private dispatch(res: PipeResponse): void {
@@ -213,4 +265,124 @@ function getSelfSessionId(): number {
     console.warn('[PipeClient] getSelfSessionId failed:', (err as Error).message);
   }
   return 1;
+}
+
+// === Video pipe client ====================================================
+//
+// Separate one-way client for the GDI capture stream coming out of the
+// worker. We keep this disconnected unless the agent explicitly asks for
+// it (`start()`) — hooking it up always-on would push BGRA frames over the
+// pipe even when the user isn't locked, which is exactly the case
+// Chromium's desktopCapturer already handles for free.
+
+export interface VideoPipeFrame {
+  width: number;
+  height: number;
+  /** Raw payload — for BGRA8 format this is `width*height*4` bytes. */
+  payload: Buffer;
+  /** Pixel format from `video-pipe-protocol.ts`. */
+  format: number;
+}
+
+const VIDEO_RECONNECT_DELAY_MS = 1_000;
+
+export class VideoPipeClient {
+  private sessionId: number;
+  private socket: net.Socket | null = null;
+  private decoder = new VideoFrameDecoder();
+  private listeners = new Set<(frame: VideoPipeFrame) => void>();
+  private wantOpen = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
+  constructor(sessionId: number) {
+    this.sessionId = sessionId;
+  }
+
+  onFrame(fn: (frame: VideoPipeFrame) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  isOpen(): boolean {
+    return !!this.socket && !this.socket.destroyed;
+  }
+
+  /** Open the pipe and start receiving frames. Idempotent. */
+  start(): void {
+    this.wantOpen = true;
+    if (this.isOpen() || this.reconnectTimer) return;
+    this.connect();
+  }
+
+  /** Stop receiving frames and close the pipe. */
+  stop(): void {
+    this.wantOpen = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      try { this.socket.destroy(); } catch { /* ignore */ }
+      this.socket = null;
+    }
+    // Drop any partial frame buffer so a future start() begins clean.
+    this.decoder = new VideoFrameDecoder();
+  }
+
+  private connect(): void {
+    if (!this.wantOpen) return;
+    const path = videoPipePathForSession(this.sessionId);
+    const sock = net.createConnection(path);
+    this.socket = sock;
+
+    sock.on('connect', () => {
+      // Connected — nothing to do, frames will start streaming.
+    });
+
+    sock.on('data', (chunk: Buffer) => {
+      const frames = this.decoder.push(chunk);
+      for (const f of frames) this.deliver(f);
+    });
+
+    sock.on('error', (err) => {
+      // Common case: ENOENT before the worker has bound the pipe. Don't
+      // log spam; just let `close` fire and the reconnect timer take over.
+      if ((err as any).code !== 'ENOENT') {
+        console.warn('[VideoPipe] socket error:', err.message);
+      }
+    });
+
+    sock.on('close', () => {
+      this.socket = null;
+      if (!this.wantOpen) return;
+      // Throttle reconnects so we don't busy-loop while the worker is dead.
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this.connect();
+      }, VIDEO_RECONNECT_DELAY_MS);
+    });
+  }
+
+  private deliver(frame: VideoFrame): void {
+    const out: VideoPipeFrame = {
+      width: frame.width,
+      height: frame.height,
+      payload: frame.payload,
+      format: frame.format,
+    };
+    for (const fn of this.listeners) {
+      try { fn(out); } catch (err) {
+        console.warn('[VideoPipe] frame listener threw:', (err as Error).message);
+      }
+    }
+  }
+}
+
+let videoSingleton: VideoPipeClient | null = null;
+
+export function getVideoPipeClient(): VideoPipeClient {
+  if (!videoSingleton) {
+    videoSingleton = new VideoPipeClient(getSelfSessionId());
+  }
+  return videoSingleton;
 }

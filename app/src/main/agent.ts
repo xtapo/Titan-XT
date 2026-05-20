@@ -13,6 +13,8 @@ import { setupWallpaper, restoreOnStartup, restoreWallpaper } from './wallpaper'
 import { setupUpdater, checkForUpdatesWithDialog } from './updater';
 import { setupAnnotation, closeAnnotationOverlay } from './annotation';
 import { setupAudit } from './audit';
+import { setupLockScreenBridge } from './lock-screen-bridge';
+import { getPipeClient } from './pipe-client';
 
 // Chromium ships with H.265 / HEVC over WebRTC gated behind feature flags.
 // Without these, RTCRtpSender.getCapabilities('video') doesn't list HEVC and
@@ -387,6 +389,16 @@ export function startAgent(): void {
     setupUpdater(() => mainWindow);
     setupAnnotation(() => getSelectedSourceId());
     setupAudit();
+    setupLockScreenBridge(() => mainWindow);
+    // Best-effort: open the worker pipe early so desktop-change events
+    // start flowing before the user even initiates a session. The pipe
+    // connect is cheap and fails fast when the service isn't installed.
+    if (process.platform === 'win32') {
+      getPipeClient().connect().catch(() => {
+        // Service likely not installed yet — bridge stays idle until the
+        // first input event opens the pipe lazily.
+      });
+    }
     // If the previous run crashed mid-session, the user's wallpaper is still
     // blanked. Put it back before the window even shows up.
     restoreOnStartup().catch((err) => {

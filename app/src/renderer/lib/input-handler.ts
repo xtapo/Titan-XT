@@ -62,8 +62,6 @@ export class InputHandler {
     // two pointers overlapping (their own + the captured host one).
     // Same approach as TeamViewer/AnyDesk/Parsec — show only the remote cursor.
     this.videoEl.style.cursor = 'none';
-    const wrapper = this.videoEl.parentElement;
-    if (wrapper) wrapper.style.cursor = 'none';
     this.videoEl.tabIndex = 0;
     this.videoEl.focus();
 
@@ -105,8 +103,6 @@ export class InputHandler {
   disable(): void {
     this.enabled = false;
     this.videoEl.style.cursor = 'default';
-    const wrapper = this.videoEl.parentElement;
-    if (wrapper) wrapper.style.cursor = 'default';
 
     // Hide the synthetic cursor on disconnect / lock so it doesn't linger
     // over a frozen video frame.

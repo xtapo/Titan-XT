@@ -148,6 +148,19 @@ contextBridge.exposeInMainWorld('titanAPI', {
     getInfo: () => ipcRenderer.invoke('app:getInfo'),
   },
 
+  // === Lock-screen capture fallback ===
+  // The agent forwards GDI captures from the SYSTEM worker so the viewer
+  // can see the host's lock screen / UAC dim screen / Ctrl+Alt+Del — all
+  // of which Chromium's desktopCapturer renders as black.
+  lockscreen: {
+    onFrame: (cb: (frame: { width: number; height: number; format: number; payload: Uint8Array }) => void) => {
+      ipcRenderer.on('lockscreen:frame', (_e, frame) => cb(frame));
+    },
+    onState: (cb: (state: { locked: boolean }) => void) => {
+      ipcRenderer.on('lockscreen:state', (_e, state) => cb(state));
+    },
+  },
+
   // === Auto Update ===
   updater: {
     check: () => ipcRenderer.invoke('updater:check'),

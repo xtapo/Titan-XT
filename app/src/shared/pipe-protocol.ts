@@ -15,9 +15,19 @@ import type { MouseMessage, KeyMessage, RemoteActionId } from './protocol';
 /** Pipe name. {sessionId} is filled in by the worker so each interactive
  *  session has its own pipe and we never cross sessions. */
 export const PIPE_NAME_PREFIX = 'titan-xt-input';
+/** Secondary pipe carrying GDI screen captures from the worker so we can
+ *  keep streaming after the user locks the workstation (Chromium's
+ *  desktopCapturer is bound to the user's `winsta0\\default` desktop and
+ *  goes blank on the secure Winlogon desktop). Binary frame layout, see
+ *  `shared/video-pipe-protocol.ts`. */
+export const VIDEO_PIPE_NAME_PREFIX = 'titan-xt-video';
 
 export function pipePathForSession(sessionId: number): string {
   return `\\\\.\\pipe\\${PIPE_NAME_PREFIX}-${sessionId}`;
+}
+
+export function videoPipePathForSession(sessionId: number): string {
+  return `\\\\.\\pipe\\${VIDEO_PIPE_NAME_PREFIX}-${sessionId}`;
 }
 
 // === Request kinds ===
@@ -57,9 +67,27 @@ export interface PipeResponse {
   error?: string;
 }
 
+// === Server-push events (worker → agent) ===
+// The worker pushes events as JSON-line frames with id=0 so the agent's
+// pipe client can distinguish them from request responses. The current
+// event vocabulary is small — extend the union when adding new ones.
+export interface PipeEvent {
+  id: 0;
+  event: 'desktop';
+  /** Active input desktop name as reported by GetUserObjectInformation.
+   *  Common values: "Default" (normal user desktop), "Winlogon" (lock
+   *  screen / UAC dim screen / Ctrl+Alt+Del). */
+  desktop: string;
+}
+
+/** Type guard — distinguishes a server-push event from a request response. */
+export function isPipeEvent(msg: any): msg is PipeEvent {
+  return !!msg && msg.id === 0 && typeof msg.event === 'string';
+}
+
 // === Framing helpers ===
 
-export function encodeFrame(msg: PipeRequest | PipeResponse): Buffer {
+export function encodeFrame(msg: PipeRequest | PipeResponse | PipeEvent): Buffer {
   return Buffer.from(JSON.stringify(msg) + '\n', 'utf8');
 }
 
